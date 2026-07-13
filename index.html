@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>VIX 적립 매수 대시보드</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+:root{--bg:#f5f4ee;--surface:#fbfaf6;--border:#e1e0d9;--text:#2a2a28;--muted:#7d7b74;--accent:#2a78d6;--accent2:#1baf7a;--coral:#c96442}
+@media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--surface:#232320;--border:#2c2c2a;--text:#ecebe4;--muted:#8f8d85;--accent:#3987e5;--accent2:#1baf7a;--coral:#d4744f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+.wrap{max-width:820px;margin:0 auto;padding:24px 18px 60px}
+h1{font-size:22px;font-weight:600;margin:0 0 4px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
+.card h2{font-size:14px;font-weight:600;margin:0 0 14px;color:var(--muted)}
+label{font-size:13px;color:var(--muted);display:block;margin-bottom:5px}
+input{background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 11px;font-size:15px;width:100%;font-family:inherit}
+input:focus{outline:none;border-color:var(--accent)}
+button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}
+button.ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+button.small{padding:6px 12px;font-size:13px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.row>div{flex:1;min-width:100px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.stat{background:var(--bg);border-radius:8px;padding:11px 13px}
+.stat .k{font-size:11px;color:var(--muted)}
+.stat .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
+.big{font-size:34px}
+canvas{max-width:100%}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:7px 8px;border-bottom:1px solid var(--border)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:500;font-size:12px}
+.pos{color:var(--accent2)} .neg{color:var(--coral)}
+.formula{background:var(--bg);border-radius:8px;padding:12px;font-size:12px;color:var(--muted);word-break:break-all;line-height:1.7;margin-top:10px}
+.msg{font-size:13px;margin-top:10px;min-height:18px}
+.msg.ok{color:var(--accent2)} .msg.err{color:var(--coral)}
+.hint{font-size:12px;color:var(--muted);margin-top:8px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.del{cursor:pointer;color:var(--coral);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>VIX 적립 매수 대시보드</h1>
+<div class="sub" id="subtitle">데이터 불러오는 중…</div>
+
+<div class="card">
+  <h2>오늘 얼마 살까</h2>
+  <div class="row" style="margin-bottom:14px">
+    <div><label>오늘 VIX (종가)</label><input type="number" id="vix" step="0.01" placeholder="16.13"/></div>
+  </div>
+  <div class="grid">
+    <div class="stat"><div class="k">오늘 매수금액</div><div class="v big" id="amt">–</div></div>
+    <div class="stat"><div class="k">이 페이스로 한 달</div><div class="v" id="mon">–</div></div>
+    <div class="stat"><div class="k">지금 분위기</div><div class="v" id="stat">–</div></div>
+  </div>
+  <canvas id="curve" height="230" style="margin-top:16px"></canvas>
+  <div class="formula" id="formula"></div>
+</div>
+
+<div class="card">
+  <h2>수집 데이터 이력</h2>
+  <div class="grid">
+    <div class="stat"><div class="k">누적 유효 데이터</div><div class="v" id="ndata">–</div></div>
+    <div class="stat"><div class="k">마지막 수집일</div><div class="v" id="lastd">–</div></div>
+    <div class="stat"><div class="k">곡선 최저 VIX</div><div class="v" id="vlo">–</div></div>
+  </div>
+  <div class="hint">데이터는 GitHub Actions가 매 거래일 자동 수집해 data.json에 커밋합니다. 곡선은 그때마다 재적합됩니다.</div>
+</div>
+</div>
+
+<script>
+// ================= 상태 =================
+let data=null;           // data.json (곡선 + 수집이력)
+let A,B,C,VLO,MULO,SLOPE;
+let chart=null;
+
+// ============ 곡선 재적합 (다기간 가중회귀) ============
+function refit(){
+  let XtX=[[0,0,0],[0,0,0],[0,0,0]], Xty=[0,0,0];
+  for(const hz of data.horizons){
+    const w=1/hz.n, s=hz.s, t=hz.t;
+    const M=[[s[0],s[1],s[2]],[s[1],s[2],s[3]],[s[2],s[3],s[4]]];
+    for(let i=0;i<3;i++){for(let j=0;j<3;j++) XtX[i][j]+=w*M[i][j]; Xty[i]+=w*t[i];}
+  }
+  const b=solve3(XtX,Xty); A=b[0];B=b[1];C=b[2];
+  VLO=Math.exp(-B/(2*C)); MULO=mu(VLO);
+  SLOPE=(data.maxA-data.minA)/(mu(data.vhi)-MULO);
+}
+function mu(v){const l=Math.log(v);return A+B*l+C*l*l;}
+function amount(v){return Math.min(Math.max(Math.round((data.minA+SLOPE*(mu(v)-MULO))/100)*100,data.minA),data.maxA);}
+function solve3(M,y){
+  const a=M.map((r,i)=>[...r,y[i]]);
+  for(let i=0;i<3;i++){let mx=i;for(let k=i+1;k<3;k++)if(Math.abs(a[k][i])>Math.abs(a[mx][i]))mx=k;
+    if(mx!==i){const tp=a[i];a[i]=a[mx];a[mx]=tp;}const piv=a[i][i];
+    for(let j=i;j<4;j++)a[i][j]/=piv;
+    for(let k=0;k<3;k++){if(k===i)continue;const f=a[k][i];for(let j=i;j<4;j++)a[k][j]-=f*a[i][j];}}
+  return[a[0][3],a[1][3],a[2][3]];
+}
+function moodOf(v){if(v<14)return['아주 잔잔','var(--accent2)'];if(v<20)return['평온','var(--text)'];if(v<27)return['조정','var(--coral)'];if(v<40)return['불안','var(--coral)'];return['공포·패닉','var(--coral)'];}
+
+// ================= UI =================
+function drawCurve(vhere){
+  const CV=[],CA=[];for(let x=9;x<=70;x++){CV.push(x);CA.push(amount(x));}
+  const mk=CV.map(x=>x===Math.round(vhere)?amount(vhere):null);
+  const dark=matchMedia('(prefers-color-scheme:dark)').matches;
+  const muted=dark?'#8f8d85':'#7d7b74',grid=dark?'#2c2c2a':'#e1e0d9',blue=dark?'#3987e5':'#2a78d6';
+  if(!chart){
+    chart=new Chart(document.getElementById('curve'),{type:'line',
+      data:{labels:CV,datasets:[
+        {data:CA,borderColor:blue,borderWidth:2,pointRadius:0,tension:.3},
+        {data:mk,borderColor:'transparent',pointBackgroundColor:blue,pointRadius:6}]},
+      options:{responsive:true,animation:false,plugins:{legend:{display:false},tooltip:{enabled:false}},
+        scales:{y:{min:0,ticks:{color:muted,callback:z=>(z/1e4)+'만'},grid:{color:grid}},
+          x:{ticks:{color:muted,callback:(z,i)=>[9,19,30,40,50,60,70].includes(CV[i])?CV[i]:''},grid:{display:false},title:{display:true,text:'VIX',color:muted}}}}});
+  }else{chart.data.datasets[0].data=CA;chart.data.datasets[1].data=mk;chart.update('none');}
+}
+function updateToday(){
+  const v=parseFloat(document.getElementById('vix').value);
+  if(!(v>0)){document.getElementById('amt').textContent='–';return;}
+  const a=amount(v);
+  document.getElementById('amt').textContent=a.toLocaleString('ko-KR')+'원';
+  document.getElementById('mon').textContent=Math.round(a*21/1e4)+'만원';
+  const[m,c]=moodOf(v);const s=document.getElementById('stat');s.textContent=m;s.style.color=c;
+  drawCurve(v);
+}
+function refreshStatus(){
+  let n=0; for(const hz of data.horizons) n=Math.max(n,hz.n);
+  document.getElementById('ndata').textContent=n.toLocaleString();
+  document.getElementById('lastd').textContent=data.lastDate;
+  document.getElementById('vlo').textContent=VLO.toFixed(1);
+  const C0=data.minA+SLOPE*(A-MULO),C1=SLOPE*B,C2=SLOPE*C;
+  document.getElementById('formula').innerHTML='매수액 = clip( '+Math.round(C0).toLocaleString()+' '+(C1>=0?'+':'−')+Math.abs(C1).toLocaleString(undefined,{maximumFractionDigits:0})+'·ln(V) '+(C2>=0?'+':'−')+Math.abs(C2).toLocaleString(undefined,{maximumFractionDigits:0})+'·(ln V)², '+data.minA.toLocaleString()+', '+data.maxA.toLocaleString()+' )';
+}
+
+// ================= 매매기록 =================
+function flash(id,t,ok){const e=document.getElementById(id);e.textContent=t;e.className='msg '+(ok?'ok':'err');setTimeout(()=>{e.textContent='';},4000);}
+
+// ================= 초기화 =================
+document.getElementById('vix').addEventListener('input',updateToday);
+
+
+(async function init(){
+  try{
+    const r=await fetch('data.json?v='+Date.now());
+    data=await r.json();
+  }catch(e){document.getElementById('subtitle').textContent='data.json을 불러오지 못했습니다.';return;}
+  refit(); refreshStatus(); 
+  document.getElementById('subtitle').textContent='다기간 함수(1·2·3·5년) · 앵커 '+data.vhi+' · 매 거래일 자동 갱신';
+  document.getElementById('t_date').value=new Date().toISOString().slice(0,10);
+  // 마지막 수집 VIX를 기본 입력값으로: 버퍼 마지막
+  const lastV=data.horizons[0].buf.slice(-1)[0].v;
+  document.getElementById('vix').value=lastV;
+  updateToday();
+})();
+</script>
+</body>
+</html>
