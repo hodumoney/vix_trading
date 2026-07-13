@@ -3,158 +3,304 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>VIX 적립 매수 대시보드</title>
+<title>VIX 적립</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
-:root{--bg:#f5f4ee;--surface:#fbfaf6;--border:#e1e0d9;--text:#2a2a28;--muted:#7d7b74;--accent:#2a78d6;--accent2:#1baf7a;--coral:#c96442}
-@media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--surface:#232320;--border:#2c2c2a;--text:#ecebe4;--muted:#8f8d85;--accent:#3987e5;--accent2:#1baf7a;--coral:#d4744f}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
-.wrap{max-width:820px;margin:0 auto;padding:24px 18px 60px}
-h1{font-size:22px;font-weight:600;margin:0 0 4px}
-.sub{color:var(--muted);font-size:13px;margin-bottom:22px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
-.card h2{font-size:14px;font-weight:600;margin:0 0 14px;color:var(--muted)}
-label{font-size:13px;color:var(--muted);display:block;margin-bottom:5px}
-input{background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 11px;font-size:15px;width:100%;font-family:inherit}
-input:focus{outline:none;border-color:var(--accent)}
-button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}
-button.ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
-button.small{padding:6px 12px;font-size:13px}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
-.row>div{flex:1;min-width:100px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-.stat{background:var(--bg);border-radius:8px;padding:11px 13px}
-.stat .k{font-size:11px;color:var(--muted)}
-.stat .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
-.big{font-size:34px}
-canvas{max-width:100%}
-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
-th,td{text-align:right;padding:7px 8px;border-bottom:1px solid var(--border)}
-th:first-child,td:first-child{text-align:left}
-th{color:var(--muted);font-weight:500;font-size:12px}
-.pos{color:var(--accent2)} .neg{color:var(--coral)}
-.formula{background:var(--bg);border-radius:8px;padding:12px;font-size:12px;color:var(--muted);word-break:break-all;line-height:1.7;margin-top:10px}
-.msg{font-size:13px;margin-top:10px;min-height:18px}
-.msg.ok{color:var(--accent2)} .msg.err{color:var(--coral)}
-.hint{font-size:12px;color:var(--muted);margin-top:8px}
-.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.del{cursor:pointer;color:var(--coral);font-size:12px}
+:root{
+  --bg:#f2f4f6; --card:#ffffff; --ink:#191f28; --sub:#4e5968; --dim:#8b95a1;
+  --line:#e5e8eb; --blue:#3182f6; --blue-soft:#e8f2ff; --up:#f04452; --down:#3182f6;
+  --mint:#00c896; --amber:#ff9500; --radius:20px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --bg:#17171c; --card:#1f2024; --ink:#f0f2f4; --sub:#adb5bd; --dim:#6b7684;
+    --line:#2a2c31; --blue:#4a90ff; --blue-soft:#1a2942; }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",Roboto,sans-serif;
+  line-height:1.5;letter-spacing:-0.01em}
+.app{max-width:480px;margin:0 auto;padding:0 0 90px}
+.head{padding:22px 20px 6px}
+.head h1{font-size:22px;font-weight:800;margin:0;letter-spacing:-0.03em}
+.head .d{font-size:13px;color:var(--dim);margin-top:3px}
+.view{padding:8px 16px}
+.card{background:var(--card);border-radius:var(--radius);padding:22px;margin:12px 0;
+  box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.card.tap{cursor:pointer;transition:transform .1s}
+.card.tap:active{transform:scale(.985)}
+.eyebrow{font-size:12px;font-weight:700;color:var(--blue);letter-spacing:0;margin-bottom:10px}
+.amt{font-size:44px;font-weight:800;letter-spacing:-0.04em;line-height:1.1}
+.amt .won{font-size:26px;font-weight:700;margin-left:2px}
+.sub{font-size:14px;color:var(--sub)}
+.row{display:flex;gap:10px;margin-top:14px}
+.pill{flex:1;background:var(--bg);border-radius:14px;padding:13px 14px}
+.pill .k{font-size:12px;color:var(--dim)}
+.pill .v{font-size:17px;font-weight:700;margin-top:3px}
+.mood{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;
+  padding:6px 12px;border-radius:999px;background:var(--blue-soft);color:var(--blue)}
+.mood.warn{background:rgba(255,149,0,.14);color:var(--amber)}
+.mood.fear{background:rgba(240,68,82,.12);color:var(--up)}
+h2.sec{font-size:18px;font-weight:800;margin:26px 4px 4px;letter-spacing:-0.02em}
+p.body{font-size:15px;color:var(--sub);margin:10px 4px;line-height:1.65}
+p.body b{color:var(--ink);font-weight:700}
+.chartbox{position:relative;width:100%;height:230px;margin-top:8px}
+.chartbox.tall{height:280px}
+.big2{display:flex;gap:10px;margin:12px 0}
+.big2 .c{flex:1;background:var(--card);border-radius:var(--radius);padding:18px}
+.big2 .c .k{font-size:12px;color:var(--dim)}
+.big2 .c .v{font-size:26px;font-weight:800;letter-spacing:-0.03em;margin-top:4px}
+.big2 .c .s{font-size:12px;color:var(--sub);margin-top:3px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--sub);margin:6px 4px 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:middle}
+.slider{display:flex;align-items:center;gap:12px;margin:6px 0 4px}
+.slider input[type=range]{flex:1;accent-color:var(--blue)}
+.vixin{width:78px;text-align:right;font-size:16px;font-weight:700;border:1px solid var(--line);
+  border-radius:12px;padding:9px;background:var(--bg);color:var(--ink);font-family:inherit}
+.step{display:flex;gap:14px;margin:16px 4px}
+.step .n{flex:0 0 30px;height:30px;border-radius:10px;background:var(--blue-soft);color:var(--blue);
+  font-weight:800;display:flex;align-items:center;justify-content:center;font-size:14px}
+.step .t{font-size:14px;color:var(--sub);line-height:1.6}
+.step .t b{color:var(--ink);display:block;font-size:15px;font-weight:700;margin-bottom:2px}
+.tabbar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);
+  display:flex;max-width:480px;margin:0 auto;padding:8px 0 max(8px,env(safe-area-inset-bottom))}
+.tab{flex:1;border:none;background:none;color:var(--dim);font-family:inherit;font-size:11px;font-weight:600;
+  display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:4px}
+.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.tab.on{color:var(--blue)}
+.hidden{display:none}
+.note{font-size:12px;color:var(--dim);margin:10px 4px;line-height:1.6}
+.formula{background:var(--bg);border-radius:14px;padding:14px;font-size:12px;color:var(--sub);
+  word-break:break-all;line-height:1.8;margin:10px 0}
+.formula b{color:var(--ink)}
+.fade{animation:fade .3s ease}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 </style>
 </head>
 <body>
-<div class="wrap">
-<h1>VIX 적립 매수 대시보드</h1>
-<div class="sub" id="subtitle">데이터 불러오는 중…</div>
+<div class="app">
+  <div class="head">
+    <h1 id="htitle">오늘의 매수</h1>
+    <div class="d" id="hsub">불러오는 중…</div>
+  </div>
 
-<div class="card">
-  <h2>오늘 얼마 살까</h2>
-  <div class="row" style="margin-bottom:14px">
-    <div><label>오늘 VIX (종가)</label><input type="number" id="vix" step="0.01" placeholder="16.13"/></div>
+  <!-- ===== 탭1: 오늘 ===== -->
+  <div class="view" id="v-today">
+    <div class="card">
+      <div class="eyebrow">오늘 살 금액</div>
+      <div class="amt" id="amt">–</div>
+      <div class="sub" id="amtsub" style="margin-top:8px"></div>
+      <div style="margin-top:14px"><span class="mood" id="mood">–</span></div>
+      <div class="row">
+        <div class="pill"><div class="k">이 페이스로 한 달</div><div class="v" id="mon">–</div></div>
+        <div class="pill"><div class="k">기준 VIX (전일 종가)</div><div class="v" id="basevix">–</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">VIX로 미리 보기</div>
+      <div class="slider">
+        <input type="range" id="vix" min="9" max="70" step="0.5" value="16"/>
+        <input class="vixin" type="number" id="vixn" step="0.01" value="16"/>
+      </div>
+      <div class="chartbox"><canvas id="curveToday"></canvas></div>
+      <div class="note">VIX가 낮은 안정기(19 부근)엔 적게, 공포가 커질수록(40↑) 최대 10만원까지 삽니다.</div>
+    </div>
+
+    <div class="card tap" onclick="go('model')">
+      <div class="eyebrow">왜 이렇게 사나요?</div>
+      <div class="sub" style="color:var(--ink);font-weight:700;font-size:16px">공포에 사는 규칙, 수학으로 →</div>
+      <div class="sub" style="margin-top:4px">모델이 어떻게 만들어졌는지 보기</div>
+    </div>
   </div>
-  <div class="grid">
-    <div class="stat"><div class="k">오늘 매수금액</div><div class="v big" id="amt">–</div></div>
-    <div class="stat"><div class="k">이 페이스로 한 달</div><div class="v" id="mon">–</div></div>
-    <div class="stat"><div class="k">지금 분위기</div><div class="v" id="stat">–</div></div>
+
+  <!-- ===== 탭2: 모델 ===== -->
+  <div class="view hidden" id="v-model">
+    <div class="card">
+      <div class="eyebrow">한 줄 요약</div>
+      <div class="sub" style="font-size:17px;color:var(--ink);font-weight:700;line-height:1.5">
+        남들이 무서워할 때 더 많이 사고,<br/>어중간하게 불안할 때 아낍니다.</div>
+    </div>
+
+    <h2 class="sec">1. 과거에게 물었습니다</h2>
+    <p class="body">지난 26년(2000~2026) 동안 <b>“VIX가 이 정도일 때 샀다면 1·2·3·5년 뒤 몇 배가 됐나”</b>를 6,400여 일에 대해 계산했습니다. 기간이 다르면 비교가 안 되니 모두 연 수익률로 환산해 한 잣대에 올렸습니다.</p>
+
+    <h2 class="sec">2. U자 곡선을 발견했습니다</h2>
+    <p class="body">그 답이 <b>U자</b>였습니다. VIX가 아주 높을 때(공포)와 아주 낮을 때(잔잔한 강세장) 둘 다 이후 수익이 좋았고, 그 사이 <b>VIX 19 부근(불안 진입기)</b>이 가장 나빴습니다.</p>
+    <div class="card">
+      <div class="chartbox"><canvas id="muCurve"></canvas></div>
+      <div class="note">가로축 VIX, 세로축은 이후 기대 성장. 낮을수록 사기 나쁜 시점입니다.</div>
+    </div>
+
+    <h2 class="sec">3. 곡선을 금액으로 옮겼습니다</h2>
+    <p class="body">가장 나쁜 지점(VIX 19)에 <b>최소 1만원</b>, 공포 정점(VIX 45)에 <b>최대 10만원</b>을 놓고 그 사이를 매끄럽게 이었습니다. 이게 오늘의 매수 금액입니다.</p>
+    <div class="formula" id="formulaBox"></div>
+
+    <h2 class="sec">임의로 정한 값이 없습니다</h2>
+    <div class="step"><div class="n">✓</div><div class="t"><b>곡선 계수</b>26년 데이터 회귀로 산출</div></div>
+    <div class="step"><div class="n">✓</div><div class="t"><b>최저점 VIX 19</b>곡선을 미분해 자동으로 나온 값</div></div>
+    <div class="step"><div class="n">✓</div><div class="t"><b>상한 앵커 45</b>529개(시작시점×보유기간) 조합에서 수익이 가장 견고한 값으로 선택</div></div>
+    <div class="step"><div class="n">✓</div><div class="t"><b>추세·이평선</b>넣어 검증했으나 수익을 못 높여 <b style="display:inline">일부러 제외</b></div></div>
+
+    <div class="card tap" onclick="go('perf')" style="margin-top:16px">
+      <div class="eyebrow">그래서 얼마나 좋나요?</div>
+      <div class="sub" style="color:var(--ink);font-weight:700;font-size:16px">26년 성과 보기 →</div>
+    </div>
   </div>
-  <canvas id="curve" height="230" style="margin-top:16px"></canvas>
-  <div class="formula" id="formula"></div>
+
+  <!-- ===== 탭3: 성과 ===== -->
+  <div class="view hidden" id="v-perf">
+    <div class="big2">
+      <div class="c"><div class="k">연평균 수익률</div><div class="v" style="color:var(--up)">24.97%</div><div class="s">균등 적립 23.34%</div></div>
+      <div class="c"><div class="k">평균 매입단가</div><div class="v">$1.51</div><div class="s">균등 대비 −22%</div></div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">26년 누적 자산 (같은 원금)</div>
+      <div class="legend"><span><i style="background:var(--blue)"></i>VIX 적립</span><span><i style="background:var(--dim)"></i>균등 적립</span></div>
+      <div class="chartbox tall"><canvas id="wealth"></canvas></div>
+      <div class="note">같은 총투자금을 넣었을 때 최종 평가액 <b style="color:var(--ink)">99.6억 vs 77.7억</b> (+28%). 2배 레버리지 QLD 합성 기준.</div>
+    </div>
+
+    <h2 class="sec">초과수익은 어디서 오나</h2>
+    <p class="body">비결은 예측이 아니라 <b>위기 대응</b>입니다. 2008·2020처럼 VIX가 치솟은 몇 달간 매일 최대 10만원씩 담았고, 그때 산 물량이 가장 큰 수익을 냈습니다.</p>
+
+    <div class="card">
+      <div class="eyebrow">위기 때 매수가 몰립니다</div>
+      <div class="chartbox"><canvas id="crisisBar"></canvas></div>
+      <div class="note">2008년 9월~2009년 6월 실제 매수: <b style="color:var(--ink)">VIX 적립 1,720만원</b> vs 균등이라면 500만원. 3.4배를 저점에 투입.</div>
+    </div>
+
+    <h2 class="sec">공짜는 아닙니다</h2>
+    <p class="body">위기엔 월 지출이 <b>최대 228만원</b>까지 치솟습니다. 평소 아낀 돈을 위기에 몰아 쓰는 구조라, 넉넉한 현금 여유가 있어야 이 규칙이 실제로 작동합니다.</p>
+    <div class="note">※ 과거 성과가 미래를 보장하지 않습니다. 참고용 도구이며 투자 판단의 책임은 본인에게 있습니다.</div>
+  </div>
 </div>
 
-<div class="card">
-  <h2>수집 데이터 이력</h2>
-  <div class="grid">
-    <div class="stat"><div class="k">누적 유효 데이터</div><div class="v" id="ndata">–</div></div>
-    <div class="stat"><div class="k">마지막 수집일</div><div class="v" id="lastd">–</div></div>
-    <div class="stat"><div class="k">곡선 최저 VIX</div><div class="v" id="vlo">–</div></div>
-  </div>
-  <div class="hint">데이터는 GitHub Actions가 매 거래일 자동 수집해 data.json에 커밋합니다. 곡선은 그때마다 재적합됩니다.</div>
-</div>
+<!-- ===== 탭바 ===== -->
+<div class="tabbar">
+  <button class="tab on" id="t-today" onclick="go('today')">
+    <svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9M5 10v10h14V10"/></svg>오늘</button>
+  <button class="tab" id="t-model" onclick="go('model')">
+    <svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h16M8 15l3-4 3 3 4-6"/></svg>모델</button>
+  <button class="tab" id="t-perf" onclick="go('perf')">
+    <svg viewBox="0 0 24 24"><path d="M3 3v18h18M7 14l3-3 3 3 5-6"/></svg>성과</button>
 </div>
 
 <script>
-// ================= 상태 =================
-let data=null;           // data.json (곡선 + 수집이력)
-let A,B,C,VLO,MULO,SLOPE;
-let chart=null;
+// ====== 데이터 (배포 시 data.json에서 곡선 재적합; 여기선 확정 계수 사용) ======
+const CURVE=[83100,64300,49700,38400,29600,22900,18000,14400,12000,10600,10000,10200,10900,12200,13900,16000,18400,21200,24200,27400,30800,34400,38200,42100,46100,50300,54500,58800,63200,67600,72100,76700,81300,85900,90600,95300,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000,100000];
+const MU=[1.3831,1.3183,1.268,1.2289,1.1988,1.1758,1.1587,1.1464,1.1382,1.1333,1.1313,1.1318,1.1343,1.1386,1.1445,1.1518,1.1602,1.1696,1.18,1.1911,1.2029,1.2154,1.2284,1.2418,1.2557,1.2699,1.2845,1.2994,1.3145,1.3298,1.3453,1.361,1.3768,1.3928,1.4089,1.425,1.4413,1.4576,1.474,1.4904,1.5068,1.5233,1.5398,1.5563,1.5727,1.5892,1.6057,1.6222,1.6386,1.6551,1.6715,1.6879,1.7042,1.7205,1.7368,1.753,1.7692,1.7853,1.8014,1.8175,1.8335,1.8494];
+const YRS=["2000","2001","2002","2003","2004","2005","2006","2007","2008","2009","2010","2011","2012","2013","2014","2015","2016","2017","2018","2019","2020","2021","2022","2023","2024","2025","2026"], WV=[0.02,0.06,0.09,0.26,0.36,0.45,0.54,0.73,0.27,0.81,1.17,1.24,1.7,3.18,4.44,5.15,5.72,9.9,9.12,16.61,31.54,48.82,19.26,41.83,59.63,77.63,99.62], WU=[0.02,0.06,0.07,0.23,0.34,0.41,0.48,0.65,0.21,0.56,0.85,0.91,1.29,2.43,3.42,3.99,4.45,7.66,7.07,12.91,24.48,37.94,14.98,32.57,46.46,60.53,77.68];
+const A=4.9227,B=-2.5617,C=0.4327,MIN=10000,MAX=100000,MULO=1.1312,SLOPE=290247;
+let PREV_VIX=16.13, DASH=null;
 
-// ============ 곡선 재적합 (다기간 가중회귀) ============
-function refit(){
-  let XtX=[[0,0,0],[0,0,0],[0,0,0]], Xty=[0,0,0];
-  for(const hz of data.horizons){
-    const w=1/hz.n, s=hz.s, t=hz.t;
-    const M=[[s[0],s[1],s[2]],[s[1],s[2],s[3]],[s[2],s[3],s[4]]];
-    for(let i=0;i<3;i++){for(let j=0;j<3;j++) XtX[i][j]+=w*M[i][j]; Xty[i]+=w*t[i];}
-  }
-  const b=solve3(XtX,Xty); A=b[0];B=b[1];C=b[2];
-  VLO=Math.exp(-B/(2*C)); MULO=mu(VLO);
-  SLOPE=(data.maxA-data.minA)/(mu(data.vhi)-MULO);
-}
 function mu(v){const l=Math.log(v);return A+B*l+C*l*l;}
-function amount(v){return Math.min(Math.max(Math.round((data.minA+SLOPE*(mu(v)-MULO))/100)*100,data.minA),data.maxA);}
-function solve3(M,y){
-  const a=M.map((r,i)=>[...r,y[i]]);
-  for(let i=0;i<3;i++){let mx=i;for(let k=i+1;k<3;k++)if(Math.abs(a[k][i])>Math.abs(a[mx][i]))mx=k;
-    if(mx!==i){const tp=a[i];a[i]=a[mx];a[mx]=tp;}const piv=a[i][i];
-    for(let j=i;j<4;j++)a[i][j]/=piv;
-    for(let k=0;k<3;k++){if(k===i)continue;const f=a[k][i];for(let j=i;j<4;j++)a[k][j]-=f*a[i][j];}}
-  return[a[0][3],a[1][3],a[2][3]];
-}
-function moodOf(v){if(v<14)return['아주 잔잔','var(--accent2)'];if(v<20)return['평온','var(--text)'];if(v<27)return['조정','var(--coral)'];if(v<40)return['불안','var(--coral)'];return['공포·패닉','var(--coral)'];}
+function amount(v){return Math.min(Math.max(Math.round((MIN+SLOPE*(mu(v)-MULO))/100)*100,MIN),MAX);}
+function moodOf(v){if(v<14)return['아주 잔잔','mood'];if(v<20)return['평온','mood'];if(v<27)return['조정','mood warn'];if(v<40)return['불안','mood warn'];return['공포·패닉','mood fear'];}
+const dark=()=>matchMedia('(prefers-color-scheme:dark)').matches;
+const CK=()=>({muted:dark()?'#8b95a1':'#8b95a1',grid:dark()?'#2a2c31':'#e5e8eb',blue:dark()?'#4a90ff':'#3182f6',dim:'#adb5bd'});
 
-// ================= UI =================
-function drawCurve(vhere){
-  const CV=[],CA=[];for(let x=9;x<=70;x++){CV.push(x);CA.push(amount(x));}
-  const mk=CV.map(x=>x===Math.round(vhere)?amount(vhere):null);
-  const dark=matchMedia('(prefers-color-scheme:dark)').matches;
-  const muted=dark?'#8f8d85':'#7d7b74',grid=dark?'#2c2c2a':'#e1e0d9',blue=dark?'#3987e5':'#2a78d6';
-  if(!chart){
-    chart=new Chart(document.getElementById('curve'),{type:'line',
-      data:{labels:CV,datasets:[
-        {data:CA,borderColor:blue,borderWidth:2,pointRadius:0,tension:.3},
-        {data:mk,borderColor:'transparent',pointBackgroundColor:blue,pointRadius:6}]},
-      options:{responsive:true,animation:false,plugins:{legend:{display:false},tooltip:{enabled:false}},
-        scales:{y:{min:0,ticks:{color:muted,callback:z=>(z/1e4)+'만'},grid:{color:grid}},
-          x:{ticks:{color:muted,callback:(z,i)=>[9,19,30,40,50,60,70].includes(CV[i])?CV[i]:''},grid:{display:false},title:{display:true,text:'VIX',color:muted}}}}});
-  }else{chart.data.datasets[0].data=CA;chart.data.datasets[1].data=mk;chart.update('none');}
+let charts={};
+function curveChart(id,marker){
+  const k=CK();const CV=[];for(let v=9;v<=70;v++)CV.push(v);
+  if(charts[id])charts[id].destroy();
+  charts[id]=new Chart(document.getElementById(id),{type:'line',
+    data:{labels:CV,datasets:[
+      {data:CURVE,borderColor:k.blue,borderWidth:2.5,pointRadius:0,tension:.35},
+      {data:CV.map(x=>x===Math.round(marker)?amount(marker):null),borderColor:'transparent',pointBackgroundColor:k.blue,pointBorderColor:dark()?'#1f2024':'#fff',pointBorderWidth:3,pointRadius:7}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,
+      plugins:{legend:{display:false},tooltip:{enabled:false}},
+      scales:{y:{min:0,max:110000,ticks:{color:k.muted,callback:v=>(v/1e4)+'만',font:{size:11}},grid:{color:k.grid,drawBorder:false}},
+        x:{ticks:{color:k.muted,callback:function(val,i){const lab=this.getLabelForValue(val);return [9,19,30,45,60].includes(lab)?lab:'';},font:{size:11}},grid:{display:false}}}}});
 }
-function updateToday(){
+function muChart(){
+  const k=CK();const CV=[];for(let v=9;v<=70;v++)CV.push(v);
+  if(charts.mu)charts.mu.destroy();
+  charts.mu=new Chart(document.getElementById('muCurve'),{type:'line',
+    data:{labels:CV,datasets:[{data:MU,borderColor:k.blue,borderWidth:2.5,pointRadius:0,tension:.4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{title:c=>'VIX '+c[0].label,label:c=>'기대성장 '+c.parsed.y.toFixed(2)+'배'}}},
+      scales:{y:{ticks:{color:k.muted,callback:v=>v.toFixed(2),font:{size:11}},grid:{color:k.grid}},
+        x:{ticks:{color:k.muted,callback:function(val,i){const lab=this.getLabelForValue(val);return [9,19,30,45,60].includes(lab)?lab:'';},font:{size:11}},grid:{display:false}}}}});
+}
+function wealthChart(){
+  const k=CK();
+  if(charts.w)charts.w.destroy();
+  charts.w=new Chart(document.getElementById('wealth'),{type:'line',
+    data:{labels:YRS,datasets:[
+      {data:WV,borderColor:k.blue,borderWidth:2.5,pointRadius:0,tension:.25,fill:true,
+        backgroundColor:ctx=>{const c=ctx.chart.ctx.createLinearGradient(0,0,0,280);c.addColorStop(0,'rgba(49,130,246,.18)');c.addColorStop(1,'rgba(49,130,246,0)');return c;}},
+      {data:WU,borderColor:k.dim,borderWidth:2,borderDash:[5,4],pointRadius:0,tension:.25}]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>(c.datasetIndex?'균등':'VIX')+' '+c.parsed.y.toFixed(1)+'억'}}},
+      scales:{y:{type:'logarithmic',ticks:{color:k.muted,callback:v=>[0.1,1,10,100].includes(v)?v+'억':'',font:{size:11}},grid:{color:k.grid}},
+        x:{ticks:{color:k.muted,maxTicksLimit:7,font:{size:11}},grid:{display:false}}}}});
+}
+function crisisChart(){
+  const k=CK();
+  if(charts.cr)charts.cr.destroy();
+  charts.cr=new Chart(document.getElementById('crisisBar'),{type:'bar',
+    data:{labels:['균등 적립','VIX 적립'],datasets:[{data:[500,1720],
+      backgroundColor:[k.dim,k.blue],borderRadius:10,barThickness:60}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toLocaleString()+'만원'}}},
+      scales:{y:{ticks:{color:k.muted,callback:v=>v.toLocaleString()+'만',font:{size:11}},grid:{color:k.grid}},
+        x:{ticks:{color:k.muted,font:{size:13,weight:'700'}},grid:{display:false}}}}});
+}
+
+function renderToday(){
   const v=parseFloat(document.getElementById('vix').value);
-  if(!(v>0)){document.getElementById('amt').textContent='–';return;}
   const a=amount(v);
-  document.getElementById('amt').textContent=a.toLocaleString('ko-KR')+'원';
+  document.getElementById('amt').innerHTML=a.toLocaleString('ko-KR')+'<span class="won">원</span>';
   document.getElementById('mon').textContent=Math.round(a*21/1e4)+'만원';
-  const[m,c]=moodOf(v);const s=document.getElementById('stat');s.textContent=m;s.style.color=c;
-  drawCurve(v);
+  const[m,cls]=moodOf(v);const me=document.getElementById('mood');me.textContent=m;me.className=cls;
+  document.getElementById('vixn').value=v;
+  curveChart('curveToday',v);
 }
-function refreshStatus(){
-  let n=0; for(const hz of data.horizons) n=Math.max(n,hz.n);
-  document.getElementById('ndata').textContent=n.toLocaleString();
-  document.getElementById('lastd').textContent=data.lastDate;
-  document.getElementById('vlo').textContent=VLO.toFixed(1);
-  const C0=data.minA+SLOPE*(A-MULO),C1=SLOPE*B,C2=SLOPE*C;
-  document.getElementById('formula').innerHTML='매수액 = clip( '+Math.round(C0).toLocaleString()+' '+(C1>=0?'+':'−')+Math.abs(C1).toLocaleString(undefined,{maximumFractionDigits:0})+'·ln(V) '+(C2>=0?'+':'−')+Math.abs(C2).toLocaleString(undefined,{maximumFractionDigits:0})+'·(ln V)², '+data.minA.toLocaleString()+', '+data.maxA.toLocaleString()+' )';
+function initTodayHeader(){
+  const a=amount(PREV_VIX);
+  document.getElementById('amt').innerHTML=a.toLocaleString('ko-KR')+'<span class="won">원</span>';
+  document.getElementById('amtsub').textContent='전일 종가 VIX '+PREV_VIX.toFixed(1)+' 기준';
+  document.getElementById('mon').textContent=Math.round(a*21/1e4)+'만원';
+  document.getElementById('basevix').textContent=PREV_VIX.toFixed(1);
+  const[m,cls]=moodOf(PREV_VIX);const me=document.getElementById('mood');me.textContent=m;me.className=cls;
+  document.getElementById('vix').value=PREV_VIX;document.getElementById('vixn').value=PREV_VIX;
+}
+function fillFormula(){
+  const C0=MIN+SLOPE*(A-MULO),C1=SLOPE*B,C2=SLOPE*C;
+  document.getElementById('formulaBox').innerHTML=
+    '<b>매수액 = clip( '+Math.round(C0).toLocaleString()+' − '+Math.abs(Math.round(C1)).toLocaleString()+'·ln(V) + '+Math.abs(Math.round(C2)).toLocaleString()+'·(ln V)², 1만, 10만 )</b><br>V = 전일 종가 VIX · clip = 1만~10만원으로 제한';
 }
 
-// ================= 매매기록 =================
-function flash(id,t,ok){const e=document.getElementById(id);e.textContent=t;e.className='msg '+(ok?'ok':'err');setTimeout(()=>{e.textContent='';},4000);}
+const views={today:'v-today',model:'v-model',perf:'v-perf'};
+const titles={today:['오늘의 매수',''],model:['수학 모델','공포에 사는 규칙'],perf:['26년 성과','같은 돈, 더 큰 결과']};
+let built={};
+function go(name){
+  for(const k in views){document.getElementById(views[k]).classList.add('hidden');document.getElementById('t-'+k).classList.remove('on');}
+  const el=document.getElementById(views[name]);el.classList.remove('hidden');el.classList.add('fade');
+  setTimeout(()=>el.classList.remove('fade'),320);
+  document.getElementById('t-'+name).classList.add('on');
+  document.getElementById('htitle').textContent=titles[name][0];
+  document.getElementById('hsub').textContent=titles[name][1];
+  window.scrollTo(0,0);
+  if(name==='today')renderToday();
+  if(name==='model'&&!built.model){muChart();fillFormula();built.model=1;}
+  if(name==='perf'&&!built.perf){wealthChart();crisisChart();built.perf=1;}
+}
 
-// ================= 초기화 =================
-document.getElementById('vix').addEventListener('input',updateToday);
+document.getElementById('vix').addEventListener('input',renderToday);
+document.getElementById('vixn').addEventListener('input',e=>{let v=parseFloat(e.target.value);if(!(v>0))return;v=Math.min(Math.max(v,9),70);document.getElementById('vix').value=v;renderToday();});
 
-
-(async function init(){
+// data.json에서 전일 종가 VIX 가져오기(있으면). 실패해도 기본값으로 동작.
+(async function(){
   try{
     const r=await fetch('data.json?v='+Date.now());
-    data=await r.json();
-  }catch(e){document.getElementById('subtitle').textContent='data.json을 불러오지 못했습니다.';return;}
-  refit(); refreshStatus(); 
-  document.getElementById('subtitle').textContent='다기간 함수(1·2·3·5년) · 앵커 '+data.vhi+' · 매 거래일 자동 갱신';
-  document.getElementById('t_date').value=new Date().toISOString().slice(0,10);
-  // 마지막 수집 VIX를 기본 입력값으로: 버퍼 마지막
-  const lastV=data.horizons[0].buf.slice(-1)[0].v;
-  document.getElementById('vix').value=lastV;
-  updateToday();
+    DASH=await r.json();
+    PREV_VIX=DASH.horizons[0].buf.slice(-1)[0].v;
+    document.getElementById('hsub').textContent=DASH.lastDate+' 종가 기준';
+  }catch(e){ document.getElementById('hsub').textContent='기본값으로 표시 중'; }
+  initTodayHeader();
+  curveChart('curveToday',PREV_VIX);
 })();
 </script>
 </body>
