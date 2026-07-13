@@ -1,0 +1,43 @@
+name: daily-vix-update
+
+on:
+  schedule:
+    # 미국 장 마감(16:00 ET) 이후 여유를 두고 실행.
+    # UTC 기준 23:30 (겨울 EST 18:30 ET / 여름 EDT 19:30 ET) 언저리.
+    # cron은 몇 분~십수 분 지연될 수 있으나 '어제 종가'라 문제없음.
+    - cron: "30 23 * * 2-6"   # 화~토 UTC (미 거래일 월~금 마감 반영)
+  workflow_dispatch: {}        # 수동 실행 버튼
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run collector
+        run: python update.py
+
+      - name: Commit if changed
+        run: |
+          if [[ -n "$(git status --porcelain data.json)" ]]; then
+            git config user.name  "vix-dca-bot"
+            git config user.email "actions@github.com"
+            git add data.json
+            git commit -m "data: update $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "변경 없음 - 커밋 생략"
+          fi
