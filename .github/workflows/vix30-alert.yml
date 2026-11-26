@@ -1,0 +1,55 @@
+name: vix30-alert
+
+# VIX 30 돌파 단기매매 알림
+# 매일 한국시간 07:40 (UTC 22:40) 실행, 10:10 (UTC 01:10)에 한 번 더 확인(데이터 지연 대비)
+on:
+  schedule:
+    - cron: "40 22 * * *"
+    - cron: "10 1 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status = 지금 상태를 텔레그램으로 보내기(테스트) / run = 평소처럼 점검"
+        type: choice
+        options: [status, run]
+        default: status
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vix30-alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: VIX 30 돌파 점검 & 텔레그램 알림
+        env:
+          TG_TOKEN:   ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          MODE:       ${{ github.event.inputs.mode || 'run' }}
+          ETF:        ${{ vars.VIX30_ETF || 'TQQQ' }}
+        run: python signal30.py
+
+      - name: 처리 기록 저장
+        run: |
+          if [[ -n "$(git status --porcelain signal30_state.json)" ]]; then
+            git config user.name  "vix30-bot"
+            git config user.email "actions@github.com"
+            git add signal30_state.json
+            git commit -m "state: vix30 $(date -u +%Y-%m-%d)"
+            git pull --rebase
+            git push
+          else
+            echo "no change"
+          fi
