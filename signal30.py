@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """
-VIX 30 돌파 단기매매 알림 (텔레그램)
+빅스 매수법 알림 (텔레그램) — 규칙 v2
 
 규칙
-  1) 오늘 VIX 종가 >= 30 이고 어제 종가 < 30  ->  신호
-  2) 다음 미국 거래일 시가에 매수
-  3) 2거래일 뒤 시가에 매도
-  4) 보유 마지막 날 종가에 새 돌파가 나오면 팔지 않고 2일 연장
+  1) 신호(D): VIX 종가 >= 30 이고 전날 종가 < 30
+  2) 매수: 다음 거래일(D+1) 미국장 시가
+  3) 판단: 2거래일 뒤(D+2) 종가 기준 (한국시간 D+3 아침에 알림)
+       이익이면                                   -> D+3 시가 매도
+       손실이어도 ① VIX(D+2) < 돌파일 VIX
+                  ② QQQ가 52주 최고 종가 대비 -20% 이내  -> 계속 보유(연장)
+       그 밖의 손실                               -> D+3 시가 매도
+  4) 연장 중: 매일 종가 VIX < 25 이면 다음 거래일 시가 매도. 늦어도 D+18 시가 매도
+  5) 보유 마지막 날 종가에 VIX가 다시 30을 새로 돌파하면 판단을 2거래일 미룸
 
-매 거래일 미국장 마감 뒤(한국시간 아침 7:40, 10:10 재확인) 실행되고,
-아래 일이 있는 날에만 텔레그램을 보냅니다.
-  - 매수 신호   (오늘 밤 시가에 매수)
-  - 매도일      (오늘 밤 시가에 매도)
-  - 보유 연장   (오늘 밤 팔지 말 것)
-이미 보낸 날짜는 signal30_state.json 에 기록해 같은 알림을 두 번 보내지 않습니다.
-
+매일 한국시간 아침 7:40(10:10 재확인)에 실행되고, 아래 일이 있는 날에만 보냅니다.
+  매수 신호 / 오늘 밤 매수 / 판단(매도 또는 연장) / 연장 중 매일 계속 보유 / 매도 / 오늘 밤 매도
+이미 보낸 알림은 signal30_state.json 에 기록해 두 번 보내지 않습니다.
 수동 실행(MODE=status)하면 지금 상태를 바로 보냅니다(테스트용).
 
 환경변수
-  TG_TOKEN, TG_CHAT_ID   텔레그램 봇 (기존 VIX 적립 알림과 같은 값)
-  ETF                    매수할 ETF (기본 TQQQ)
+  TG_TOKEN, TG_CHAT_ID   텔레그램 봇
+  ETF                    매수할 ETF (기본 TQQQ). 손익 계산에도 이 ETF 가격을 씀
   MODE                   run(기본) / status
-  OFFLINE_CSV, ASOF      (테스트용) 인터넷 대신 CSV로, 특정 날짜 기준으로 실행
+  OFFLINE_CSV, OFFLINE_PX_DIR, ASOF, NOW_KST   (테스트용) 인터넷 대신 CSV, 특정 날짜 기준 실행
 표준 라이브러리만 사용. Python 3.9+
 """
 import csv, io, json, os, sys, datetime as dt, urllib.parse, urllib.request
@@ -29,8 +30,13 @@ from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, "signal30_state.json")
-THRESHOLD = float(os.environ.get("VIX_THRESHOLD") or 30)
-HOLD = int(os.environ.get("HOLD_DAYS") or 2)
+TAG = "[빅스 매수법]"
+THRESHOLD = float(os.environ.get("VIX_THRESHOLD") or 30)   # 돌파 기준
+HOLD = int(os.environ.get("HOLD_DAYS") or 2)               # 기본 보유 거래일
+CALM = float(os.environ.get("VIX_CALM") or 25)             # 연장 중 매도 기준
+MAX_EXT = int(os.environ.get("MAX_EXT_DAYS") or 15)        # 연장 최대 거래일 (D+3 + 15 = D+18)
+BEAR = -0.20                                               # QQQ 52주 고점 대비 약세장 기준
+FEE = 0.0015                                               # 매수 수수료(손익 판단용)
 ETF = (os.environ.get("ETF") or "TQQQ").upper()
 NY, KST = ZoneInfo("America/New_York"), ZoneInfo("Asia/Seoul")
 WD = "월화수목금토일"
@@ -57,45 +63,46 @@ def next_sessions(d, k):
     return out
 
 
-# ---------------- VIX 종가 ----------------
+# ---------------- 데이터 ----------------
 def _get(url, t=30):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=t) as r:
         return r.read().decode("utf-8", "replace")
 
 
-def from_yahoo():
-    j = json.loads(_get("https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?range=6mo&interval=1d"))
+def _yahoo(sym, rng):
+    j = json.loads(_get(f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range={rng}&interval=1d"))
     res = j["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
     out = {}
-    for ts, c in zip(res["timestamp"], res["indicators"]["quote"][0]["close"]):
+    for ts, o, c in zip(res["timestamp"], q["open"], q["close"]):
         if c is not None:
-            out[dt.datetime.fromtimestamp(ts, NY).date()] = float(c)
+            out[dt.datetime.fromtimestamp(ts, NY).date()] = (float(o) if o is not None else None, float(c))
     return out
 
 
-def from_stooq():
+def _stooq(sym):
     out = {}
-    for row in csv.DictReader(io.StringIO(_get("https://stooq.com/q/d/l/?s=^vix&i=d"))):
+    for row in csv.DictReader(io.StringIO(_get(f"https://stooq.com/q/d/l/?s={sym}&i=d"))):
         try:
-            out[dt.date.fromisoformat(row["Date"])] = float(row["Close"])
-        except (KeyError, ValueError):
+            out[dt.date.fromisoformat(row["Date"])] = (float(row["Open"]), float(row["Close"]))
+        except (KeyError, ValueError, TypeError):
             pass
     return out
 
 
-def from_cboe():
+def _cboe_vix():
     out = {}
     for row in csv.DictReader(io.StringIO(_get("https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"))):
         try:
-            out[dt.datetime.strptime(row["DATE"], "%m/%d/%Y").date()] = float(row["CLOSE"])
+            out[dt.datetime.strptime(row["DATE"], "%m/%d/%Y").date()] = (float(row["OPEN"]), float(row["CLOSE"]))
         except (KeyError, ValueError):
             pass
     return out
 
 
-def from_csv(path):
-    """테스트용: DATE(YYYY-MM-DD 또는 MM/DD/YYYY), CLOSE 열이 있는 CSV."""
+def _csv(path):
+    """테스트용: DATE(YYYY-MM-DD 또는 MM/DD/YYYY), CLOSE (선택 OPEN) 열이 있는 CSV."""
     out = {}
     with open(path, encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
@@ -103,44 +110,67 @@ def from_csv(path):
             s = row.get("DATE")
             try:
                 d = dt.date.fromisoformat(s) if "-" in s else dt.datetime.strptime(s, "%m/%d/%Y").date()
-                out[d] = float(row["CLOSE"])
-            except (TypeError, ValueError):
+                o = float(row["OPEN"]) if row.get("OPEN") else None
+                out[d] = (o, float(row["CLOSE"]))
+            except (TypeError, ValueError, KeyError):
                 pass
     return out
 
 
-def load_vix(now_ny):
-    if os.environ.get("OFFLINE_CSV"):
-        series, src = from_csv(os.environ["OFFLINE_CSV"]), "CSV"
-    else:
-        best, src = {}, None
-        for name, fn in (("Yahoo", from_yahoo), ("Stooq", from_stooq), ("CBOE", from_cboe)):
-            try:
-                m = fn()
-            except Exception as e:  # 소스 하나가 막혀도 다음으로
-                print(f"  {name} 실패: {e}", file=sys.stderr)
-                continue
-            if len(m) >= 30 and (not best or max(m) > max(best)):
-                best, src = m, name
-        series = best
-    if not series:
-        raise SystemExit("VIX 데이터를 가져오지 못했습니다.")
+def _best(sources, min_len):
+    best, src = {}, None
+    for name, fn in sources:
+        try:
+            m = fn()
+        except Exception as e:  # 소스 하나가 막혀도 다음으로
+            print(f"  {name} 실패: {e}", file=sys.stderr)
+            continue
+        if len(m) >= min_len and (not best or max(m) > max(best)):
+            best, src = m, name
+    return best, src
+
+
+def _trim(series, now_ny):
     asof = dt.date.fromisoformat(os.environ["ASOF"]) if os.environ.get("ASOF") else None
     days = sorted(d for d in series if is_session(d) and (asof is None or d <= asof))
     # 오늘 장이 아직 안 끝났으면(16:20 ET 전) 오늘 값은 장중값이라 제외
     if asof is None and days and days[-1] == now_ny.date() and now_ny.time() < dt.time(16, 20):
         days = days[:-1]
-    return days, [series[d] for d in days], src
+    return days
 
 
-# ---------------- 규칙 재현 ----------------
+def load_vix(now_ny):
+    if os.environ.get("OFFLINE_CSV"):
+        series, src = _csv(os.environ["OFFLINE_CSV"]), "CSV"
+    else:
+        series, src = _best((("Yahoo", lambda: _yahoo("^VIX", "1y")),
+                             ("Stooq", lambda: _stooq("^vix")),
+                             ("CBOE", _cboe_vix)), 30)
+    if not series:
+        raise SystemExit("VIX 데이터를 가져오지 못했습니다.")
+    days = _trim(series, now_ny)
+    return days, [series[d][1] for d in days], src
+
+
+def load_px(sym, now_ny):
+    """{날짜: (시가, 종가)}. 못 받으면 빈 dict (판단은 보류하고 경고)."""
+    if os.environ.get("OFFLINE_PX_DIR"):
+        p = os.path.join(os.environ["OFFLINE_PX_DIR"], f"{sym}.csv")
+        series = _csv(p) if os.path.exists(p) else {}
+    else:
+        series, _ = _best((("Yahoo", lambda: _yahoo(sym, "2y")),
+                           ("Stooq", lambda: _stooq(f"{sym.lower()}.us"))), 200)
+    return {d: series[d] for d in _trim(series, now_ny)}
+
+
+# ---------------- 규칙 ----------------
 def replay(closes):
-    """[{sig, buy, sell, ext:[...]}] — 인덱스는 closes 기준(len 이상이면 미래 거래일)."""
+    """신호·매수·원래 매도(판단 다음 날) 인덱스. 보유 마지막 날 새 돌파면 2일 미룸."""
     n, trades, i = len(closes), [], 1
     while i < n:
         if closes[i] >= THRESHOLD and closes[i - 1] < THRESHOLD:
             a = i + 1
-            if trades and trades[-1]["sell"] == a:      # 보유 마지막 날 새 돌파 -> 연장
+            if trades and trades[-1]["sell"] == a:      # 보유 마지막 날 새 돌파 -> 2일 미룸
                 trades[-1]["sell"] = a + HOLD
                 trades[-1]["ext"].append(i)
             else:
@@ -151,6 +181,65 @@ def replay(closes):
     return trades
 
 
+def pnl_at(tr, k, day, etf):
+    """k일 종가 기준 손익(매수일 시가 대비, 매수 수수료 포함). 데이터 없으면 None."""
+    b, c = etf.get(day(tr["buy"])), etf.get(day(k))
+    if not b or not c or not b[0]:
+        return None
+    return c[1] / b[0] * (1 - FEE) - 1
+
+
+def qqq_dd(d, qqq):
+    """d일 QQQ 종가의 52주(252거래일) 최고 종가 대비 하락률."""
+    ks = sorted(k for k in qqq if k <= d)[-252:]
+    if len(ks) < 200 or ks[-1] != d:
+        return None
+    return qqq[d][1] / max(qqq[k][1] for k in ks) - 1
+
+
+def analyze(days, closes, etf, qqq):
+    """각 거래에 판단(dec)·매도 인덱스(x)·이유(why)·기한(deadline)을 붙임. x=None이면 아직 보유/미정."""
+    n = len(days)
+    fut = next_sessions(days[-1], 60)
+    day = lambda k: days[k] if k < n else fut[k - n]
+    trades = replay(closes)
+    for tr in trades:
+        e = tr["sell"]
+        tr.update(e=e, x=None, why=None, dec=None, deadline=e + MAX_EXT)
+        last = e - 1
+        if last > n - 1:                     # 아직 판단할 종가가 없음
+            continue
+        pnl, dd = pnl_at(tr, last, day, etf), qqq_dd(days[last], qqq)
+        if pnl is None or dd is None:        # 가격 데이터 없음 -> 판단 보류
+            continue
+        c1, c2 = closes[last] < closes[tr["sig"]], dd > BEAR
+        tr["dec"] = dict(pnl=pnl, dd=dd, c1=c1, c2=c2, extend=pnl < 0 and c1 and c2)
+        if not tr["dec"]["extend"]:
+            tr["x"], tr["why"] = e, ("profit" if pnl >= 0 else "loss")
+            continue
+        for t in range(e, min(e + MAX_EXT, n)):
+            if closes[t] < CALM:
+                tr["x"], tr["why"] = t + 1, "calm"
+                break
+        else:
+            if e + MAX_EXT - 1 <= n - 1:
+                tr["x"], tr["why"] = e + MAX_EXT, "deadline"
+    return trades, day
+
+
+def end_of(tr):
+    """이 거래로 보유하는 마지막 시점(매도 시가 인덱스, 미정이면 최대치)."""
+    if tr["x"] is not None:
+        return tr["x"]
+    return tr["deadline"] if tr["dec"] and tr["dec"]["extend"] else tr["e"]
+
+
+def held_by_other(tr, trades, k):
+    """k번째 거래일 시가에 다른 거래로 보유가 이어지는지 (새 신호와 겹칠 때)."""
+    return any(t is not tr and t["buy"] <= k < end_of(t) for t in trades)
+
+
+# ---------------- 메시지 ----------------
 def fmt_day(d):
     return f"{d.month}/{d.day}({WD[d.weekday()]})"
 
@@ -160,93 +249,170 @@ def open_kst(d):
     return f"한국시간 {t.month}/{t.day} {t:%H:%M}"
 
 
-def active_trade(days, closes):
-    """지금 진행 중이거나(보유) 곧 시작할(내일 매수) 거래와, 인덱스->날짜 함수."""
-    n = len(days)
-    fut = next_sessions(days[-1], 12)
-    day = lambda k: days[k] if k < n else fut[k - n]
-    trades = replay(closes)
-    act = next((t for t in trades if t["sell"] >= n and t["buy"] <= n), None)
-    return trades, act, day
+def pct(x):
+    return f"{x * 100:+.1f}%".replace("-", "−")
 
 
-def buy_msg(days, closes, tr, day):
+def when(d, today):
+    return "오늘 밤" if d == today else fmt_day(d)
+
+
+def sell_block(title, reason_lines, d_sell, today, overlap):
+    if overlap:
+        return [f"⏳ {TAG} 계속 보유 (다른 신호 보유 중)", *reason_lines,
+                "→ 다른 신호로 보유가 이어지니 팔지 말고 계속 보유", "※ 매도일은 그 신호 기준으로 다시 알려드립니다."]
+    head = f"🔔 {TAG} {'오늘 밤 ' if d_sell == today else ''}매도 ({title})"
+    return [head, *reason_lines,
+            f"→ {when(d_sell, today)} 미국장 시가 매도 · {open_kst(d_sell)}",
+            "→ 토스에서 시장가 예약주문(매도)"]
+
+
+def signal_msg(tr, days, closes, day, today, holding):
+    s = tr["sig"]
+    lines = [f"🚨 {TAG} 매수 신호",
+             f"{fmt_day(days[s])} VIX 종가 {closes[s]:.2f} (전날 {closes[s - 1]:.2f}) → {THRESHOLD:g} 새로 돌파"]
+    if holding:
+        lines += ["이미 보유 중 → 추가 매수하지 말고 그대로 보유하세요."]
+    else:
+        lines += [f"매수: {fmt_day(day(tr['buy']))} 미국장 시가 · {open_kst(day(tr['buy']))}",
+                  f"→ 토스에서 {ETF} 시장가 예약주문(매수)"]
+    lines.append(f"※ {fmt_day(day(tr['e']))} 아침에 매도할지, 더 들고 갈지 알려드립니다.")
+    return "\n".join(lines)
+
+
+def chain_msg(tr, days, closes, day, L):
     return "\n".join([
-        "\U0001F6A8 [VIX 30 돌파] 매수 신호",
-        f"{fmt_day(days[tr['sig']])} VIX 종가 {closes[tr['sig']]:.2f} (전날 {closes[tr['sig'] - 1]:.2f}) → {THRESHOLD:g} 새로 돌파",
-        f"매수: {fmt_day(day(tr['buy']))} 미국장 시가 · {open_kst(day(tr['buy']))}",
-        f"매도 예정: {fmt_day(day(tr['sell']))} 미국장 시가 · {open_kst(day(tr['sell']))}",
-        f"→ 토스에서 {ETF} 시장가 예약주문(매수)",
-        f"※ 매도일 아침에 다시 알려드립니다. 보유 마지막 날 다시 돌파하면 {HOLD}일 연장.",
+        f"↪️ {TAG} 보유 연장 (재돌파)",
+        f"{fmt_day(days[L])} VIX 종가 {closes[L]:.2f} (전날 {closes[L - 1]:.2f}) → 보유 마지막 날 다시 {THRESHOLD:g} 돌파",
+        f"→ {fmt_day(day(L + 1))} 시가에 팔지 말고 계속 보유",
+        f"※ {fmt_day(day(tr['e']))} 아침에 매도할지, 더 들고 갈지 알려드립니다.",
     ])
 
 
-def new_close_events(days, closes):
-    """새 종가가 들어온 날 한 번: 매수 신호 / 보유 연장."""
-    n = len(days)
-    trades, act, day = active_trade(days, closes)
-    out = []
-    for tr in trades:
-        if tr["sig"] == n - 1:
-            out.append(("buy", day(tr["buy"]), buy_msg(days, closes, tr, day)))
-        if tr["ext"] and tr["ext"][-1] == n - 1:
-            old = day(n)  # 원래 매도일(다음 세션)
-            out.append(("ext", day(tr["sell"]), "\n".join([
-                "\u21AA\uFE0F [VIX 30 돌파] 보유 연장",
-                f"{fmt_day(days[-1])} VIX 종가 {closes[-1]:.2f} (전날 {closes[-2]:.2f}) → 보유 마지막 날 다시 {THRESHOLD:g} 돌파",
-                f"{fmt_day(old)} 시가에 팔지 말고 계속 보유하세요.",
-                f"새 매도일: {fmt_day(day(tr['sell']))} 미국장 시가 · {open_kst(day(tr['sell']))}",
-            ])))
-    return out
+def decision_msg(tr, trades, days, closes, day, today):
+    dec, e, s = tr["dec"], tr["e"], tr["sig"]
+    last = e - 1
+    head = f"{fmt_day(days[last])} 종가 {ETF} {pct(dec['pnl'])} (매수일 시가 대비)"
+    cond = [f"① VIX {closes[last]:.2f} {'<' if dec['c1'] else '≥'} 돌파일 {closes[s]:.2f}  {'✅' if dec['c1'] else '❌'}",
+            f"② QQQ 52주 고점 대비 {pct(dec['dd'])}  {'✅' if dec['c2'] else '❌ 약세장'}"]
+    if dec["extend"]:
+        dl = day(tr["deadline"])
+        return "\n".join([f"↪️ {TAG} 보유 연장", head, *cond,
+                          f"→ {when(day(e), today)} 팔지 말고 계속 보유",
+                          f"매도: VIX 종가가 {CALM:g} 아래로 내려오면 다음 날 시가 (매일 아침 알려드림)",
+                          f"기한: {fmt_day(dl)} 시가 · {open_kst(dl)}"])
+    overlap = held_by_other(tr, trades, e)
+    if dec["pnl"] >= 0:
+        return "\n".join(sell_block("이익", [head], day(e), today, overlap))
+    return "\n".join(sell_block("손실", [head, *cond, "연장 조건 안 맞음 → 예정대로 매도"], day(e), today, overlap))
 
 
-def reminders(days, closes, today_kst):
-    """매수일·매도일 당일 아침 알림. 오늘 밤 열리는 미국 세션 = today_kst 날짜의 세션."""
-    if not is_session(today_kst):
-        return []
-    prev = today_kst - dt.timedelta(days=1)
-    while not is_session(prev):
-        prev -= dt.timedelta(days=1)
-    if days[-1] != prev:           # 어제 종가가 아직 없으면(데이터 지연) 판단 보류
-        return []
-    n = len(days)
-    trades, act, day = active_trade(days, closes)
-    if not act:
-        return []
-    out = []
-    if day(act["buy"]) == today_kst:
-        out.append(("buy", today_kst, "\n".join([
-            "\u23F0 [VIX 30 돌파] 오늘 밤 매수",
-            f"오늘 밤 미국장 시가에 {ETF} 매수 · {open_kst(today_kst)}",
-            f"신호: {fmt_day(days[act['sig']])} VIX 종가 {closes[act['sig']]:.2f}",
-            f"매도 예정: {fmt_day(day(act['sell']))} 시가 · {open_kst(day(act['sell']))}",
-            "→ 토스에서 시장가 예약주문(매수)",
-        ])))
-    if day(act["sell"]) == today_kst:
-        out.append(("sell", today_kst, "\n".join([
-            "\U0001F514 [VIX 30 돌파] 오늘 매도",
-            f"오늘 밤 미국장 시가에 {ETF} 매도 · {open_kst(today_kst)}",
-            f"매수: {fmt_day(day(act['buy']))} 시가 (신호 {fmt_day(days[act['sig']])} VIX {closes[act['sig']]:.2f})",
-            f"{fmt_day(days[-1])} VIX 종가 {closes[-1]:.2f}: 새 돌파 아님 → 연장 없음",
-            "→ 토스에서 시장가 예약주문(매도)",
-        ])))
-    return out
+def hold_msg(tr, days, closes, day, etf, L, dl):
+    lines = [f"⏳ {TAG} 계속 보유", f"{fmt_day(days[L])} VIX 종가 {closes[L]:.2f} → {CALM:g} 이상"]
+    p = pnl_at(tr, L, day, etf)
+    if p is not None:
+        lines.append(f"{ETF} {pct(p)} (매수일 시가 대비)")
+    lines.append(f"→ 오늘은 할 일 없음 · 기한 {fmt_day(day(dl))} 시가")
+    return "\n".join(lines)
 
 
-def status(days, closes, src):
-    trades, act, day = active_trade(days, closes)
-    lines = ["\U0001F4CB [VIX 30 돌파] 현재 상태",
-             f"마지막 VIX 종가: {fmt_day(days[-1])} {closes[-1]:.2f} (출처 {src})",
-             f"규칙: VIX 종가 {THRESHOLD:g} 새로 돌파 → 다음 날 시가 {ETF} 매수 → {HOLD}거래일 뒤 시가 매도"]
-    if act and act["buy"] == len(days):
-        lines.append(f"매수 대기: {fmt_day(day(act['buy']))} 시가 매수 → {fmt_day(day(act['sell']))} 시가 매도 예정")
-    elif act:
-        lines.append(f"보유 중: {fmt_day(day(act['buy']))} 시가 매수 → {fmt_day(day(act['sell']))} 시가 매도 예정")
+def exit_msg(tr, trades, days, closes, day, etf, L, today):
+    if tr["why"] == "calm":
+        title, why = "공포 진정", f"{fmt_day(days[L])} VIX 종가 {closes[L]:.2f} → {CALM:g} 미만"
     else:
+        title, why = "기한", f"{fmt_day(days[L])} VIX 종가 {closes[L]:.2f} → {CALM:g} 이상이지만 기한 도달"
+    lines = [why]
+    p = pnl_at(tr, L, day, etf)
+    if p is not None:
+        lines.append(f"{ETF} {pct(p)} (매수일 시가 대비)")
+    return "\n".join(sell_block(title, lines, day(tr["x"]), today, held_by_other(tr, trades, tr["x"])))
+
+
+WHY = {"profit": "2거래일 뒤 이익", "loss": "손실, 연장 조건 안 맞음",
+       "calm": f"VIX {CALM:g} 미만 (공포 진정)", "deadline": "연장 기한 도달"}
+
+
+def events(days, closes, etf, qqq, today, hour):
+    """(키, 메시지, 함께 처리할 키들) 목록."""
+    n, L = len(days), len(days) - 1
+    trades, day = analyze(days, closes, etf, qqq)
+    out = []
+    # 1) 새 종가(L)로 생기는 일
+    for tr in trades:
+        s, e = tr["sig"], tr["e"]
+        if s == L:
+            holding = held_by_other(tr, trades, tr["buy"])
+            extra = [f"buy:{day(tr['buy'])}"] if (holding or day(tr["buy"]) == today) else []
+            out.append((f"signal:{days[s]}", signal_msg(tr, days, closes, day, today, holding), extra))
+        if L in tr["ext"]:
+            out.append((f"chain:{days[L]}", chain_msg(tr, days, closes, day, L), []))
+        if e - 1 == L:
+            if tr["dec"]:
+                extra = [f"sell:{day(e)}"] if not tr["dec"]["extend"] and day(e) == today else []
+                out.append((f"decide:{days[s]}", decision_msg(tr, trades, days, closes, day, today), extra))
+            elif hour >= 10:   # 재확인 때까지 가격을 못 받으면 경고
+                out.append((f"decidefail:{days[s]}", "\n".join([
+                    f"⚠️ {TAG} 판단 보류 (가격 데이터 못 받음)",
+                    f"{fmt_day(days[L])} VIX 종가 {closes[L]:.2f} (돌파일 {closes[s]:.2f})",
+                    f"직접 확인: {ETF}가 매수일 시가보다 낮고, VIX < 돌파일, QQQ 52주 고점 대비 −20% 이내면 계속 보유",
+                    f"아니면 {when(day(e), today)} 시가 매도 · {open_kst(day(e))}"]), []))
+        if tr["dec"] and tr["dec"]["extend"] and e <= L < tr["deadline"]:
+            if tr["x"] == L + 1:
+                extra = [f"sell:{day(L + 1)}"] if day(L + 1) == today else []
+                out.append((f"exit:{day(L + 1)}", exit_msg(tr, trades, days, closes, day, etf, L, today), extra))
+            elif tr["x"] is None:
+                dl = max(t["deadline"] for t in trades if t["dec"] and t["dec"]["extend"] and t["buy"] <= L + 1 < end_of(t))
+                out.append((f"hold:{days[L]}", hold_msg(tr, days, closes, day, etf, L, dl), []))
+    # 2) 매수일·매도일 당일 아침 알림 (어제 종가까지 들어왔을 때만)
+    if is_session(today):
+        prev = today - dt.timedelta(days=1)
+        while not is_session(prev):
+            prev -= dt.timedelta(days=1)
+        if days[-1] == prev:
+            for tr in trades:
+                if tr["buy"] == n and not held_by_other(tr, trades, n):
+                    out.append((f"buy:{today}", "\n".join([
+                        f"⏰ {TAG} 오늘 밤 매수",
+                        f"오늘 밤 미국장 시가에 {ETF} 매수 · {open_kst(today)}",
+                        f"신호: {fmt_day(days[tr['sig']])} VIX 종가 {closes[tr['sig']]:.2f}",
+                        f"※ {fmt_day(day(tr['e']))} 아침에 매도할지, 더 들고 갈지 알려드립니다.",
+                        "→ 토스에서 시장가 예약주문(매수)"]), []))
+                if tr["x"] == n and not held_by_other(tr, trades, n):
+                    out.append((f"sell:{today}", "\n".join([
+                        f"🔔 {TAG} 오늘 밤 매도",
+                        f"오늘 밤 미국장 시가에 {ETF} 매도 · {open_kst(today)}",
+                        f"이유: {WHY[tr['why']]}",
+                        "→ 토스에서 시장가 예약주문(매도)"]), []))
+    return out
+
+
+def status(days, closes, src, etf, qqq, today):
+    n = len(days)
+    trades, day = analyze(days, closes, etf, qqq)
+    lines = [f"📋 {TAG} 현재 상태",
+             f"마지막 VIX 종가: {fmt_day(days[-1])} {closes[-1]:.2f} (출처 {src})",
+             f"규칙: VIX 종가 {THRESHOLD:g} 새로 돌파 → 다음 날 시가 {ETF} 매수 → 2거래일 뒤 종가로 판단",
+             f"  이익이면 매도 / 손실이어도 VIX가 돌파일보다 낮고 QQQ 고점 대비 −20% 이내면 보유",
+             f"  보유 중엔 VIX 종가 {CALM:g} 미만인 다음 날 시가 매도, 늦어도 D+18"]
+    act = [t for t in trades if t["buy"] <= n and end_of(t) >= n]
+    if not act:
         lines.append(f"보유 없음. VIX가 {THRESHOLD:g} 아래에서 위로 종가 마감하는 날 알려드립니다.")
-    recent = [t for t in trades if t["sig"] >= len(days) - 250][-3:]
+    for tr in act:
+        p = pnl_at(tr, n - 1, day, etf) if tr["buy"] < n else None
+        pt = f" · {ETF} {pct(p)}" if p is not None else ""
+        if tr["buy"] == n:
+            lines.append(f"매수 대기: {fmt_day(day(tr['buy']))} 시가 매수 · 판단 {fmt_day(day(tr['e']))} 아침")
+        elif tr["x"] is not None:
+            lines.append(f"매도 예정: {fmt_day(day(tr['x']))} 시가 · 이유: {WHY[tr['why']]}{pt}")
+        elif tr["dec"] and tr["dec"]["extend"]:
+            lines.append(f"보유(연장) 중: {fmt_day(day(tr['buy']))} 매수{pt} · 기한 {fmt_day(day(tr['deadline']))} 시가")
+        else:
+            lines.append(f"보유 중: {fmt_day(day(tr['buy']))} 매수{pt} · 판단 {fmt_day(day(tr['e']))} 아침")
+    recent = [t for t in trades if t["sig"] >= n - 250][-3:]
     if recent:
         lines.append("최근 신호: " + ", ".join(f"{fmt_day(days[t['sig']])} {closes[t['sig']]:.1f}" for t in recent))
+    if not etf or not qqq:
+        lines.append(f"⚠️ 가격 데이터({ETF if not etf else 'QQQ'})를 못 받아 손익 판단을 못 합니다.")
     return "\n".join(lines)
 
 
@@ -254,7 +420,7 @@ def status(days, closes, src):
 def send(text):
     token, chat = os.environ.get("TG_TOKEN"), os.environ.get("TG_CHAT_ID")
     if not token or not chat:
-        print("(TG_TOKEN/TG_CHAT_ID 없음 - 미리보기만)\n" + text)
+        print("(TG_TOKEN/TG_CHAT_ID 없음 - 미리보기만)\n" + text + "\n")
         return
     data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
     with urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data), timeout=30) as r:
@@ -264,39 +430,43 @@ def send(text):
     print("발송 완료:", text.splitlines()[0])
 
 
+def run(days, closes, etf, qqq, now_kst, state):
+    """보낼 메시지 목록과 갱신된 state."""
+    today = now_kst.date()
+    sent = set(state.get("sent", []))
+    msgs = []
+    for key, msg, extra in events(days, closes, etf, qqq, today, now_kst.hour):
+        if key in sent:
+            continue
+        msgs.append(msg)
+        sent.add(key)
+        sent.update(extra)
+    keep = (today - dt.timedelta(days=90)).isoformat()
+    state["sent"] = sorted(k for k in sent if k.split(":", 1)[-1] >= keep)
+    state["last_processed"] = days[-1].isoformat()
+    state["last_vix"] = round(closes[-1], 2)
+    return msgs, state
+
+
 def main():
     now_ny = dt.datetime.now(NY)
     now_kst = dt.datetime.fromisoformat(os.environ["NOW_KST"]).replace(tzinfo=KST) if os.environ.get("NOW_KST") else dt.datetime.now(KST)
     days, closes, src = load_vix(now_ny)
-    print(f"VIX {len(days)}일, 마지막 {days[-1]} {closes[-1]:.2f} ({src}) · 지금 한국시간 {now_kst:%m/%d %H:%M}")
+    etf, qqq = load_px(ETF, now_ny), load_px("QQQ", now_ny)
+    print(f"VIX {len(days)}일, 마지막 {days[-1]} {closes[-1]:.2f} ({src}) · {ETF} {len(etf)}일 · QQQ {len(qqq)}일 · 지금 한국시간 {now_kst:%m/%d %H:%M}")
     if (os.environ.get("MODE") or "run") == "status":
-        send(status(days, closes, src))
+        send(status(days, closes, src, etf, qqq, now_kst.date()))
         return
     state = {}
     if os.path.exists(STATE):
         with open(STATE, encoding="utf-8") as f:
             state = json.load(f)
-    sent = set(state.get("sent", []))
-    out = []
-    last = days[-1].isoformat()
-    if not state.get("last_processed") or state["last_processed"] < last:
-        for kind, d, msg in new_close_events(days, closes):
-            out.append(msg)
-            if kind == "buy" and d == now_kst.date():
-                sent.add(f"buy:{d}")          # 매수일 당일 아침에 받은 신호면 리마인더 생략
-        state["last_processed"] = last
-        state["last_vix"] = round(closes[-1], 2)
-        state["source"] = src
-    for kind, d, msg in reminders(days, closes, now_kst.date()):
-        key = f"{kind}:{d}"
-        if key not in sent:
-            out.append(msg)
-            sent.add(key)
-    for m in out:
+    msgs, state = run(days, closes, etf, qqq, now_kst, state)
+    state["source"] = src
+    for m in msgs:
         send(m)
-    if not out:
+    if not msgs:
         print("오늘은 보낼 알림 없음")
-    state["sent"] = sorted(sent)[-30:]
     if not os.environ.get("ASOF") or os.environ.get("WRITE_STATE"):
         with open(STATE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
