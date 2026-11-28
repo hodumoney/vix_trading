@@ -264,7 +264,7 @@ def sell_block(title, reason_lines, d_sell, today, overlap):
     head = f"🔔 {TAG} {'오늘 밤 ' if d_sell == today else ''}매도 ({title})"
     return [head, *reason_lines,
             f"→ {when(d_sell, today)} 미국장 시가 매도 · {open_kst(d_sell)}",
-            "→ 토스에서 시장가 예약주문(매도)"]
+            "→ 시장가 예약주문(매도)"]
 
 
 def signal_msg(tr, days, closes, day, today, holding):
@@ -275,7 +275,7 @@ def signal_msg(tr, days, closes, day, today, holding):
         lines += ["이미 보유 중 → 추가 매수하지 말고 그대로 보유하세요."]
     else:
         lines += [f"매수: {fmt_day(day(tr['buy']))} 미국장 시가 · {open_kst(day(tr['buy']))}",
-                  f"→ 토스에서 {ETF} 시장가 예약주문(매수)"]
+                  f"→ {ETF} 시장가 예약주문(매수)"]
     lines.append(f"※ {fmt_day(day(tr['e']))} 아침에 매도할지, 더 들고 갈지 알려드립니다.")
     return "\n".join(lines)
 
@@ -376,13 +376,13 @@ def events(days, closes, etf, qqq, today, hour):
                         f"오늘 밤 미국장 시가에 {ETF} 매수 · {open_kst(today)}",
                         f"신호: {fmt_day(days[tr['sig']])} VIX 종가 {closes[tr['sig']]:.2f}",
                         f"※ {fmt_day(day(tr['e']))} 아침에 매도할지, 더 들고 갈지 알려드립니다.",
-                        "→ 토스에서 시장가 예약주문(매수)"]), []))
+                        "→ 시장가 예약주문(매수)"]), []))
                 if tr["x"] == n and not held_by_other(tr, trades, n):
                     out.append((f"sell:{today}", "\n".join([
                         f"🔔 {TAG} 오늘 밤 매도",
                         f"오늘 밤 미국장 시가에 {ETF} 매도 · {open_kst(today)}",
                         f"이유: {WHY[tr['why']]}",
-                        "→ 토스에서 시장가 예약주문(매도)"]), []))
+                        "→ 시장가 예약주문(매도)"]), []))
     return out
 
 
