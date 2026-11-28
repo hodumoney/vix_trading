@@ -1,0 +1,54 @@
+name: vix30-report
+
+# 빅스 매수법 점검 보고
+# 매일 한국시간 08:00 (UTC 23:00): 새 QQQ·VIX 종가를 history/qqq_vix.csv에 쌓고,
+# 실전 거래가 하나 끝났으면 백테스트를 다시 돌려 텔레그램으로 보고
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "report = 지금 바로 점검 보고 받기 / run = 평소처럼(거래가 끝났을 때만 보고)"
+        type: choice
+        options: [report, run]
+        default: report
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vix30-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 데이터 쌓기 & 점검 보고
+        env:
+          TG_TOKEN:   ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          MODE:       ${{ github.event.inputs.mode || 'run' }}
+        run: python report.py
+
+      - name: 기록 저장
+        run: |
+          if [[ -n "$(git status --porcelain history report_state.json)" ]]; then
+            git config user.name  "vix30-bot"
+            git config user.email "actions@github.com"
+            git add history report_state.json
+            git commit -m "report: data $(date -u +%Y-%m-%d)"
+            git pull --rebase
+            git push
+          else
+            echo "no change"
+          fi
