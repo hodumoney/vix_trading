@@ -11,7 +11,9 @@
      - 판정: 미리 정한 조건을 넘는 값이 있으면 "검토 필요", 아니면 "유지" (자동으로 바꾸지 않음)
 수동 실행(MODE=report)하면 거래가 없어도 바로 보고서를 보냅니다.
 
-TQQQ·QLD는 QQQ로 합성합니다: r = L·r_QQQ − (L−1)·금리/252 − k/252 (연구 노트북과 같은 방식)
+TQQQ·QLD는 QQQ로 합성합니다: r = L·r_QQQ − (L−1)·금리/252 − k/252 (연구 노트북과 같은 방식).
+실전 기간(2026-11-20 신호 직전부터)의 TQQQ는 야후 실제 가격으로 바꿔 계산합니다(알림과 같은 가격).
+VIX는 CBOE 공식값을 먼저 쓰고, 값이 이상한 날은 기록에 넣지 않습니다.
 표준 라이브러리만 사용. Python 3.9+
 """
 import csv, json, os, sys, datetime as dt
@@ -51,22 +53,33 @@ def load_hist():
 
 
 def append_new(d, qo, qc, v, now_ny):
-    """야후 QQQ·VIX로 새 거래일 추가. QQQ는 마지막 저장값에 수익률을 이어 붙임(가격 수준 차이 무시)."""
+    """새 거래일 추가. VIX는 CBOE 공식값 우선(없으면 야후), QQQ는 마지막 저장값에 야후 수익률을 이어 붙임.
+    값이 이상하면(VIX 5~150 밖, QQQ 하루 ±20% 넘음) 그날부터 추가하지 않고 멈춤."""
     try:
-        yq = S._yahoo("QQQ", "3mo"); yv = S._yahoo("^VIX", "3mo")
+        yq = S._yahoo("QQQ", "3mo")
     except Exception as e:
-        print("야후 실패:", e, file=sys.stderr)
+        print("야후 QQQ 실패:", e, file=sys.stderr)
         return 0
-    days = [t for t in S._trim(yq, now_ny) if t > d[-1]]
+    vix = {}
+    for name, fn in (("Yahoo", lambda: S._yahoo("^VIX", "3mo")), ("CBOE", S._cboe_vix)):   # 뒤가 우선
+        try:
+            vix.update({t: c for t, (o, c) in fn().items()})
+        except Exception as e:
+            print(f"{name} VIX 실패:", e, file=sys.stderr)
     if d[-1] not in yq:
         print(f"야후 QQQ에 {d[-1]} 값이 없어 이어 붙이지 못함", file=sys.stderr)
         return 0
+    days = [t for t in S._trim(yq, now_ny) if t > d[-1]]
     prev_y, prev_s, added = yq[d[-1]][1], qc[-1], []
     for t in days:
         o, c = yq[t]
-        if o is None or t not in yv:
+        x = vix.get(t)
+        if o is None or x is None:
             break
-        added.append((t, prev_s * o / prev_y, prev_s * c / prev_y, yv[t][1]))
+        if not (5 < x < 150) or abs(c / prev_y - 1) > 0.20:
+            print(f"{t} 값이 이상해서 추가 보류: VIX {x}, QQQ {prev_y}→{c}", file=sys.stderr)
+            break
+        added.append((t, prev_s * o / prev_y, prev_s * c / prev_y, x))
         prev_y, prev_s = c, prev_s * c / prev_y
     for t, o, c, x in added:
         d.append(t); qo.append(o); qc.append(c); v.append(x)
@@ -80,7 +93,8 @@ def append_new(d, qo, qc, v, now_ny):
 
 # ---------------- 백테스트 ----------------
 class Data:
-    def __init__(self, d, qo, qc, v):
+    def __init__(self, d, qo, qc, v, actual=None):
+        """actual = {"TQQQ": {날짜: (시가, 종가)}}: 실전 기간(LIVE_SINCE 직전부터)은 실제 가격 수익률로 이어 붙임."""
         self.d, self.qo, self.qc, self.v, self.n = d, qo, qc, v, len(d)
         last = max(RF_YEAR)
         self.rf = [RF_YEAR.get(t.year, RF_YEAR[last]) / 100 / 252 for t in d]
@@ -91,15 +105,23 @@ class Data:
             if len(win) > 252:
                 win.pop(0)
             self.hi.append(max(win) if len(win) >= 60 else float("nan"))
-        self.etf = {name: self._synth(L, k) for name, (L, k) in ETFS.items()}
+        actual = actual or {}
+        self.real = {}
+        self.etf = {name: self._synth(name, L, k, actual.get(name) or {}) for name, (L, k) in ETFS.items()}
 
-    def _synth(self, L, k):
-        O, C = [100 * self.qo[0] / self.qc[0]], [100.0]
+    def _synth(self, name, L, k, act):
+        start = LIVE_SINCE - dt.timedelta(days=10)
+        O, C, real = [100 * self.qo[0] / self.qc[0]], [100.0], set()
         for i in range(1, self.n):
+            t, p = self.d[i], self.d[i - 1]
+            if t >= start and t in act and p in act and act[t][0]:
+                O.append(C[-1] * act[t][0] / act[p][1]); C.append(C[-1] * act[t][1] / act[p][1]); real.add(i)
+                continue
             rq = self.qc[i] / self.qc[i - 1] - 1
             gap = self.qo[i] / self.qc[i - 1] - 1
             r = L * rq - (L - 1) * self.rf[i] - k / 252
             O.append(C[-1] * (1 + L * gap)); C.append(C[-1] * (1 + r))
+        self.real[name] = real
         R = [O[i + 1] / O[i] - 1 for i in range(self.n - 1)] + [0.0]
         return O, C, R
 
@@ -232,7 +254,9 @@ WHY_KR = {"profit": "이익", "loss": "손실", "calm": "VIX 25 미만", "deadli
 
 def report(D, title_line):
     cur, res = sensitivity(D)
-    lines = [f"📊 {S.TAG} 점검 보고", title_line, "", f"▶ 실전 기록 ({LIVE_SINCE.month}/{LIVE_SINCE.day} 신호부터)"]
+    real = D.real.get("TQQQ", set())
+    lines = [f"📊 {S.TAG} 점검 보고", title_line, "",
+             f"▶ 실전 기록 ({LIVE_SINCE.month}/{LIVE_SINCE.day} 신호부터, {'실제 TQQQ 가격' if real else 'QQQ로 계산한 TQQQ'})"]
     live = [t for t in cur["trades"] if D.d[t["s"]] >= LIVE_SINCE]
     tot, n_done = 1.0, 0
     for t in live:
@@ -264,7 +288,13 @@ def main():
     d, qo, qc, v = load_hist()
     added = 0 if os.environ.get("OFFLINE") else append_new(d, qo, qc, v, now_ny)
     print(f"기록 {len(d)}일, 마지막 {d[-1]} (새로 추가 {added}일)")
-    D = Data(d, qo, qc, v)
+    actual = {}
+    if not os.environ.get("OFFLINE"):
+        try:
+            actual["TQQQ"] = S._yahoo("TQQQ", "2y")
+        except Exception as e:
+            print("야후 TQQQ 실패(실전 기록은 QQQ로 계산):", e, file=sys.stderr)
+    D = Data(d, qo, qc, v, actual)
     state = {}
     if os.path.exists(STATE):
         with open(STATE, encoding="utf-8") as f:

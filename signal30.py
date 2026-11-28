@@ -41,13 +41,51 @@ ETF = (os.environ.get("ETF") or "TQQQ").upper()
 NY, KST = ZoneInfo("America/New_York"), ZoneInfo("Asia/Seoul")
 WD = "월화수목금토일"
 
-# NYSE 휴장일 (공식 일정 2025~2028). 해마다 nyse.com/trade/hours-calendars 에서 확인해 추가하세요.
-HOLIDAYS = {dt.date.fromisoformat(s) for s in """
-2025-01-01 2025-01-09 2025-01-20 2025-02-17 2025-04-18 2025-05-26 2025-06-19 2025-07-04 2025-09-01 2025-11-27 2025-12-25
-2026-01-01 2026-01-19 2026-02-16 2026-04-03 2026-05-25 2026-06-19 2026-07-03 2026-09-07 2026-11-26 2026-12-25
-2027-01-01 2027-01-18 2027-02-15 2027-03-26 2027-05-31 2027-06-18 2027-07-05 2027-09-06 2027-11-25 2027-12-24
-2028-01-17 2028-02-21 2028-04-14 2028-05-29 2028-06-19 2028-07-04 2028-09-04 2028-11-23 2028-12-25
+# NYSE 휴장일: 정기 휴장일은 규칙으로 계산, 임시 휴장(국장 등)만 아래에 직접 적습니다.
+EXTRA_CLOSED = {dt.date.fromisoformat(s) for s in """
+2001-09-11 2001-09-12 2001-09-13 2001-09-14 2004-06-11 2007-01-02 2012-10-29 2012-10-30 2018-12-05 2025-01-09
 """.split()}
+
+
+def _easter(y):
+    a, b, c = y % 19, y // 100, y % 100
+    d, e = b // 4, b % 4
+    g = (b - (b + 8) // 25 + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    return dt.date(y, (h + l - 7 * m + 114) // 31, (h + l - 7 * m + 114) % 31 + 1)
+
+
+def _nth(y, month, wd, k):
+    """k번째(음수면 뒤에서) 요일."""
+    if k > 0:
+        d = dt.date(y, month, 1)
+        return d + dt.timedelta(days=(wd - d.weekday()) % 7 + 7 * (k - 1))
+    d = dt.date(y + (month == 12), month % 12 + 1, 1) - dt.timedelta(days=1)
+    return d - dt.timedelta(days=(d.weekday() - wd) % 7)
+
+
+def _observed(d):
+    return d - dt.timedelta(days=1) if d.weekday() == 5 else d + dt.timedelta(days=1) if d.weekday() == 6 else d
+
+
+def nyse_holidays(y):
+    out = set()
+    ny = dt.date(y, 1, 1)
+    if ny.weekday() != 5:                       # 토요일 신정은 대체 휴장 없음
+        out.add(_observed(ny))
+    out |= {_nth(y, 1, 0, 3), _nth(y, 2, 0, 3), _easter(y) - dt.timedelta(days=2), _nth(y, 5, 0, -1),
+            _observed(dt.date(y, 7, 4)), _nth(y, 9, 0, 1), _nth(y, 11, 3, 4), _observed(dt.date(y, 12, 25))}
+    if y >= 2022:
+        out.add(_observed(dt.date(y, 6, 19)))
+    return out
+
+
+HOLIDAYS = set(EXTRA_CLOSED)
+for _y in range(2000, 2061):
+    HOLIDAYS |= nyse_holidays(_y)
 
 
 def is_session(d):
@@ -140,16 +178,38 @@ def _trim(series, now_ny):
 
 
 def load_vix(now_ny):
+    """VIX 종가. 날짜마다 CBOE(공식) > Yahoo > Stooq 순으로 씀. seen = 마지막 날 출처별 값."""
     if os.environ.get("OFFLINE_CSV"):
-        series, src = _csv(os.environ["OFFLINE_CSV"]), "CSV"
-    else:
-        series, src = _best((("Yahoo", lambda: _yahoo("^VIX", "1y")),
-                             ("Stooq", lambda: _stooq("^vix")),
-                             ("CBOE", _cboe_vix)), 30)
-    if not series:
+        series = _csv(os.environ["OFFLINE_CSV"])
+        days = _trim(series, now_ny)
+        return days, [series[d][1] for d in days], "CSV", {}
+    got = {}
+    for name, fn in (("CBOE", _cboe_vix), ("Yahoo", lambda: _yahoo("^VIX", "1y")), ("Stooq", lambda: _stooq("^vix"))):
+        try:
+            m = fn()
+        except Exception as e:  # 소스 하나가 막혀도 다음으로
+            print(f"  {name} 실패: {e}", file=sys.stderr)
+            continue
+        if len(m) >= 30:
+            got[name] = m
+    if not got:
         raise SystemExit("VIX 데이터를 가져오지 못했습니다.")
+    series = {}
+    for name in ("Stooq", "Yahoo", "CBOE"):     # 뒤에 오는 출처가 우선
+        series.update(got.get(name, {}))
     days = _trim(series, now_ny)
-    return days, [series[d][1] for d in days], src
+    last = days[-1]
+    seen = {name: got[name][last][1] for name in ("CBOE", "Yahoo", "Stooq") if name in got and last in got[name]}
+    src = next(iter(seen))
+    return days, [series[d][1] for d in days], src, seen
+
+
+def seen_line(seen):
+    if len(seen) < 2:
+        return f"※ VIX 출처: {', '.join(seen) or '-'} (비교할 다른 출처 없음)"
+    vals = " · ".join(f"{k} {v:.2f}" for k, v in seen.items())
+    same = max(seen.values()) - min(seen.values()) < 0.005
+    return f"※ VIX 출처별: {vals} → {'일치' if same else '다름, ' + next(iter(seen)) + ' 기준'}"
 
 
 def load_px(sym, now_ny):
@@ -386,7 +446,7 @@ def events(days, closes, etf, qqq, today, hour):
     return out
 
 
-def status(days, closes, src, etf, qqq, today):
+def status(days, closes, src, etf, qqq, today, seen=None):
     n = len(days)
     trades, day = analyze(days, closes, etf, qqq)
     lines = [f"📋 {TAG} 현재 상태",
@@ -413,6 +473,8 @@ def status(days, closes, src, etf, qqq, today):
         lines.append("최근 신호: " + ", ".join(f"{fmt_day(days[t['sig']])} {closes[t['sig']]:.1f}" for t in recent))
     if not etf or not qqq:
         lines.append(f"⚠️ 가격 데이터({ETF if not etf else 'QQQ'})를 못 받아 손익 판단을 못 합니다.")
+    if seen:
+        lines.append(seen_line(seen))
     return "\n".join(lines)
 
 
@@ -451,21 +513,40 @@ def run(days, closes, etf, qqq, now_kst, state):
 def main():
     now_ny = dt.datetime.now(NY)
     now_kst = dt.datetime.fromisoformat(os.environ["NOW_KST"]).replace(tzinfo=KST) if os.environ.get("NOW_KST") else dt.datetime.now(KST)
-    days, closes, src = load_vix(now_ny)
+    days, closes, src, seen = load_vix(now_ny)
     etf, qqq = load_px(ETF, now_ny), load_px("QQQ", now_ny)
-    print(f"VIX {len(days)}일, 마지막 {days[-1]} {closes[-1]:.2f} ({src}) · {ETF} {len(etf)}일 · QQQ {len(qqq)}일 · 지금 한국시간 {now_kst:%m/%d %H:%M}")
+    print(f"VIX {len(days)}일, 마지막 {days[-1]} {closes[-1]:.2f} ({src}, 출처별 {seen}) · {ETF} {len(etf)}일 · QQQ {len(qqq)}일 · 지금 한국시간 {now_kst:%m/%d %H:%M}")
     if (os.environ.get("MODE") or "run") == "status":
-        send(status(days, closes, src, etf, qqq, now_kst.date()))
+        send(status(days, closes, src, etf, qqq, now_kst.date(), seen))
         return
     state = {}
     if os.path.exists(STATE):
         with open(STATE, encoding="utf-8") as f:
             state = json.load(f)
+    pre = []
+    used, v = state.get("used_vix") or {}, round(closes[-1], 2)
+    changed = used.get("date") == days[-1].isoformat() and round(abs(used.get("value", v) - v), 2) >= 0.01
+    if changed:   # 같은 날 종가가 바뀌었으면, 그 때문에 판단이 달라질 때만 정정 알림
+        old_c = closes[:-1] + [used["value"]]
+        keys = lambda c: {k for k, _, _ in events(days, c, etf, qqq, now_kst.date(), now_kst.hour)}
+        k_old, k_new = keys(old_c), keys(closes)
+        changed = k_old != k_new
+    if changed:
+        kind = {"signal": "매수 신호", "decide": "매도/연장 판단", "exit": "매도", "chain": "보유 연장", "hold": "계속 보유", "sell": "오늘 밤 매도"}
+        gone = sorted({kind[k.split(":")[0]] for k in k_old - k_new if k.split(":")[0] in kind and k in set(state.get("sent", []))})
+        pre.append("\n".join([f"⚠️ {TAG} VIX 값 정정",
+                               f"{fmt_day(days[-1])} VIX 종가 {used['value']:.2f}({used.get('src', '?')}) → {v:.2f}({src})",
+                               *([f"→ 앞서 보낸 '{', '.join(gone)}' 알림은 취소입니다."] if gone else []),
+                               "지금 상태를 다시 보냅니다.", "",
+                               status(days, closes, src, etf, qqq, now_kst.date(), seen)]))
     msgs, state = run(days, closes, etf, qqq, now_kst, state)
+    if msgs and len(seen) >= 2 and max(seen.values()) - min(seen.values()) >= 0.005:
+        msgs = [m + "\n" + seen_line(seen) for m in msgs]
     state["source"] = src
-    for m in msgs:
+    state["used_vix"] = {"date": days[-1].isoformat(), "value": v, "src": src}
+    for m in pre + msgs:
         send(m)
-    if not msgs:
+    if not pre and not msgs:
         print("오늘은 보낼 알림 없음")
     if not os.environ.get("ASOF") or os.environ.get("WRITE_STATE"):
         with open(STATE, "w", encoding="utf-8") as f:

@@ -73,7 +73,7 @@ GitHub Actions로 매 거래일 데이터 자동 수집·재적합하는 개인�
 ## 파일
 | 파일 | 역할 |
 |---|---|
-| signal30.py | VIX·ETF·QQQ 가격 수집 + 규칙 판단 + 텔레그램 발송 |
+| signal30.py | VIX(CBOE 공식 우선)·ETF·QQQ 가격 수집 + 규칙 판단 + 텔레그램 발송 |
 | signal30_state.json | 이미 보낸 알림 기록(중복 방지). Actions가 자동 커밋 |
 | .github/workflows/vix30-alert.yml | 매일 한국시간 07:40 실행, 10:10 재확인 |
 | report.py | 데이터 쌓기 + 거래가 끝날 때마다 점검 보고 |
@@ -99,12 +99,19 @@ GitHub Actions로 매 거래일 데이터 자동 수집·재적합하는 개인�
 TQQQ·QLD는 QQQ로 합성해 계산하므로 실제 체결과 조금 다를 수 있습니다.
 report.py의 RF_YEAR(연방기금금리 연평균)는 해마다 한 번 고쳐 주세요(없는 해는 마지막 값 사용).
 
+## 데이터 정확도
+- VIX: CBOE 공식 종가 우선 → 없으면 Yahoo → Stooq. 출처끼리 값이 다르면 알림 끝에 출처별 값을 함께 보여줍니다.
+- 07:40에 쓴 VIX 값이 10:10 재확인 때 바뀌어 판단이 달라지면 "⚠️ VIX 값 정정" 알림이 옵니다(앞서 보낸 알림 중 취소된 것을 적어 줌).
+- 손익·52주 고점: Yahoo 실제 가격(ETF, QQQ). 못 받으면 10:10에 "⚠️ 판단 보류" 알림.
+- 점검 보고: 2000년부터의 기록은 QQQ로 합성한 TQQQ, 실전 기간(2026-11-20 신호부터)은 실제 TQQQ 가격. 값이 이상한 날(VIX 5~150 밖, QQQ 하루 ±20% 초과)은 기록에 넣지 않음.
+- 휴장일 규칙은 2000~2026년 실제 거래일과 하루도 다르지 않게 맞는 것을 확인.
+
 ## 테스트
 Actions → vix30-alert → Run workflow → mode = status → 지금 상태가 텔레그램으로 옵니다.
 
 ## 바꾸고 싶을 때
 - ETF: Settings → Secrets and variables → Actions → Variables 탭 → `VIX30_ETF` = QLD (없으면 TQQQ)
-- 휴장일: signal30.py 위쪽 HOLIDAYS에 해마다 NYSE 휴장일 추가 (현재 2025~2028 입력됨)
+- 휴장일: 정기 휴장일(신정·부활절 금요일·추수감사절 등)은 자동 계산. 임시 휴장(국장 등)이 생기면 signal30.py 위쪽 EXTRA_CLOSED에 날짜 추가
 
 ## 주의
 - 판단은 VIX·가격 종가 기준이라 장중 값과 다를 수 있습니다.
