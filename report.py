@@ -168,9 +168,12 @@ def pct(x, sign=False):
     return s.replace("-", "−")
 
 
+SHORT = {"X": "돌파 기준", "L": "연장 중 매도", "B": "약세장 기준", "cap": "연장 기한"}
+
+
 def label(p, val):
-    if p == "X" or p == "L":
-        return f"{val:g}"
+    if p in ("X", "L"):
+        return f"VIX {val:g}"
     if p == "B":
         return pct(val).replace(".0%", "%")
     return f"D+{3 + val}"
@@ -182,58 +185,77 @@ def sensitivity(D):
     for p, vals in GRID.items():
         for val in vals:
             res[(p, val)] = cur if val == RULE[p] else backtest(D, **{**RULE, p: val})
-    flags = []
-    for p, vals in GRID.items():
-        i0 = vals.index(RULE[p])
-        for j, val in enumerate(vals):
-            if j == i0:
-                continue
-            r = res[(p, val)]
-            nb = [vals[k] for k in (j - 1, j + 1) if 0 <= k < len(vals) and k != i0]
-            if (r["cagr"] >= cur["cagr"] + 0.01 and r["h1"] > cur["h1"] and r["h2"] > cur["h2"]
-                    and r["mdd"] >= cur["mdd"] - 0.03 and all(res[(p, v2)]["cagr"] > cur["cagr"] for v2 in nb)):
-                flags.append((p, val, r))
-    return cur, res, flags
+    return cur, res
+
+
+def judge(p, cur, res):
+    """(바꿀지 검토 대상 값 또는 None, 한 줄 이유)."""
+    vals = GRID[p]
+    i0 = vals.index(RULE[p])
+    nbs = lambda j: [vals[k] for k in (j - 1, j + 1) if 0 <= k < len(vals) and k != i0]
+    checks = []
+    for j, val in enumerate(vals):
+        if j == i0:
+            continue
+        r = res[(p, val)]
+        fail = None
+        if r["cagr"] < cur["cagr"] + 0.01:
+            fail = "small"
+        elif not (r["h1"] > cur["h1"] and r["h2"] > cur["h2"]):
+            fail = "half"
+        elif r["mdd"] < cur["mdd"] - 0.03:
+            fail = "mdd"
+        else:
+            bad = [v2 for v2 in nbs(j) if res[(p, v2)]["cagr"] <= cur["cagr"]]
+            fail = ("nb", bad[0]) if bad else None
+        checks.append((val, r, fail))
+    for val, r, fail in checks:
+        if fail is None:
+            return val, f"{label(p, val)} → 연 {pct(r['cagr'])} (지금 {pct(cur['cagr'])}), 앞·뒤 기간 모두 더 좋음"
+    val, r, fail = max(checks, key=lambda c: c[1]["cagr"])
+    if r["cagr"] <= cur["cagr"]:
+        return None, "지금 값이 가장 좋음"
+    head = f"{label(p, val)} → 연 {pct(r['cagr'])}, 더 높지만"
+    if fail == "small":
+        return None, f"{head} 차이 {(r['cagr'] - cur['cagr']) * 100:.1f}%p로 작음"
+    if fail == "half":
+        per = "2000–12년" if r["h1"] <= cur["h1"] else "2013년 이후"
+        return None, f"{head} {per}엔 나아지지 않음"
+    if fail == "mdd":
+        return None, f"{head} 최대낙폭이 {pct(r['mdd'])}로 깊음"
+    nb = fail[1]
+    return None, f"{head} 옆 값({label(p, nb)}) {pct(res[(p, nb)]['cagr'])}라 한 점만 좋음"
+
+
+WHY_KR = {"profit": "이익", "loss": "손실", "calm": "VIX 25 미만", "deadline": "기한"}
 
 
 def report(D, title_line):
-    cur, res, flags = sensitivity(D)
-    qld = backtest(D, etf="QLD", **RULE)
-    day = lambda k: D.d[k] if k < D.n else None
-    WHY = {"profit": "이익", "loss": "손실", "calm": "연장 → VIX 25 미만", "deadline": "연장 → 기한"}
-    lines = [f"📊 {S.TAG} 점검 보고", title_line,
-             f"백테스트 {D.d[0]:%Y-%m} ~ {D.d[-1]:%Y-%m-%d} (쉬는 돈 단기채)",
-             f"TQQQ 연 {pct(cur['cagr'])} · 최대낙폭 {pct(cur['mdd'])} · 거래 {cur['n']} · 승률 {cur['win'] * 100:.0f}% · 평균 {pct(cur['avg'], True)}",
-             f"QLD  연 {pct(qld['cagr'])} · 최대낙폭 {pct(qld['mdd'])}",
-             f"앞 2000–12 {pct(cur['h1'])} / 뒤 2013~ {pct(cur['h2'])}", ""]
+    cur, res = sensitivity(D)
+    lines = [f"📊 {S.TAG} 점검 보고", title_line, "", f"▶ 실전 기록 ({LIVE_SINCE.month}/{LIVE_SINCE.day} 신호부터)"]
     live = [t for t in cur["trades"] if D.d[t["s"]] >= LIVE_SINCE]
-    lines.append(f"실전 기록 ({LIVE_SINCE.month}/{LIVE_SINCE.day} 신호 이후, 규칙대로 했다면 TQQQ)")
-    tot = 1.0
-    n_done = 0
+    tot, n_done = 1.0, 0
     for t in live:
-        head = f"· {S.fmt_day(D.d[t['s']])} 신호 → {S.fmt_day(D.d[t['a']])} 매수 → "
+        sig = S.fmt_day(D.d[t["s"]])
         if t["done"]:
-            lines.append(head + f"{S.fmt_day(day(t['x']))} 매도 {pct(t['ret'], True)} ({WHY.get(t.get('why'), '')})")
+            lines.append(f"· {sig} 신호 → {S.fmt_day(D.d[t['x']])} 매도: {pct(t['ret'], True)} ({WHY_KR.get(t.get('why'), '')})")
             tot *= 1 + t["ret"]; n_done += 1
         else:
-            lines.append(head + f"보유 중 {pct(t['ret'], True)} ({S.fmt_day(D.d[-1])} 종가 기준)")
+            lines.append(f"· {sig} 신호 · 보유 중: {pct(t['ret'], True)} ({S.fmt_day(D.d[-1])} 종가)")
     if not live:
         lines.append("· 아직 없음")
-    elif n_done:
-        lines.append(f"  끝난 거래 {n_done}건 누적 {pct(tot - 1, True)}")
-    lines += ["", "기준값 점검 (하나씩 바꿨을 때 TQQQ 연 수익, ▶ 지금 값)"]
-    for p, vals in GRID.items():
-        cells = [f"{'▶' if val == RULE[p] else ''}{label(p, val)} {res[(p, val)]['cagr'] * 100:.1f}" for val in vals]
-        lines.append(f"{NAME[p]}: " + " | ".join(cells))
-    lines.append("")
-    if flags:
-        lines.append("⚠️ 판정: 검토 필요 (조건을 넘은 값)")
-        for p, val, r in flags:
-            lines.append(f"· {NAME[p]} {label(p, val)}: 연 {pct(r['cagr'])} (지금 {pct(cur['cagr'])}), 최대낙폭 {pct(r['mdd'])}, 앞 {pct(r['h1'])} / 뒤 {pct(r['h2'])}")
-        lines.append("→ 자동으로 바꾸지 않습니다. 바꿀지 직접 결정하세요.")
-    else:
-        lines.append("✅ 판정: 기준값 유지 (바꿀 조건을 넘는 값 없음)")
-    lines.append("※ 바꿀 조건: 연 수익 +1%p 이상 · 앞·뒤 기간 모두 우세 · 옆 값도 우세 · 최대낙폭 3%p 이내")
+    if n_done >= 2:
+        lines.append(f"끝난 거래 {n_done}건 누적 {pct(tot - 1, True)}")
+    lines += ["", f"▶ 백테스트 {D.d[0].year}~{D.d[-1]:%Y.%m.%d} (TQQQ)",
+              f"연 {pct(cur['cagr'])} · 최대낙폭 {pct(cur['mdd'])} · 승률 {cur['win'] * 100:.0f}%", ""]
+    judged = [(p, *judge(p, cur, res)) for p in GRID]
+    n_flag = sum(1 for _, v, _ in judged if v is not None)
+    lines.append("▶ 기준값: 모두 유지 ✅" if not n_flag else f"▶ 기준값: {n_flag}개 검토 필요 ⚠️")
+    for p, val, why in judged:
+        lines.append(f"{'⚠️' if val is not None else '✅'} {SHORT[p]} {label(p, RULE[p])}")
+        lines.append(f"   {why}")
+    if n_flag:
+        lines.append("→ 자동으로 바꾸지 않습니다. 바꿀지 직접 정하세요.")
     return "\n".join(lines)
 
 
