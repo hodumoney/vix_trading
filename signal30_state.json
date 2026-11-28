@@ -1,7 +1,7 @@
 {
- "last_processed": "2026-11-25",
- "last_vix": 28.29,
- "source": "초기값",
+ "last_processed": "2026-11-27",
+ "last_vix": 23.81,
+ "source": "Yahoo",
  "sent": [
   "buy:2026-11-23",
   "sell:2026-11-25"
