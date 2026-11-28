@@ -1,9 +1,15 @@
 {
  "last_processed": "2026-11-27",
  "last_vix": 23.81,
- "source": "Yahoo",
+ "source": "CBOE",
  "sent": [
   "buy:2026-11-23",
+  "exit:2026-11-30",
   "sell:2026-11-25"
- ]
+ ],
+ "used_vix": {
+  "date": "2026-11-27",
+  "value": 23.81,
+  "src": "CBOE"
+ }
 }
